@@ -94,6 +94,22 @@ module rw_environment {
     type EnvironmentITM = ITM[Input, Output, Incoming, Outgoing]
 }
 
+module rw_party {
+    import utils.*
+    import uc.*
+
+    type Input = RoundResponse ({ round : Round }) // in the paper Psid.Round()
+               | Ok                                // in the paper Psid.OK()
+
+    type Output = ()
+
+    type Incoming = ()
+
+    type Outgoing = ()
+
+    type PartyITM = ITM[Input, Output, Incoming, Outgoing]
+}
+
 module rw {
     import utils.*
     
