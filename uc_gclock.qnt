@@ -21,6 +21,7 @@ module uc {
     type Message[msg] = { sid : Sid, message : msg }
 
     type ITM[in, out, in_msg, out_msg] = {
+        sid                : Sid,
         input              : List[in],
         output             : List[out],
         incomming_messages : List[Message[in_msg]],
@@ -36,9 +37,7 @@ module rw_clock { // in the real world clock the incomming and outgoing tapes ar
                | PartyRoundRequest ({ p_sid : P_Sid }) // in the paper Psid.Round()
                | RoundOk           ({ p_sid : P_Sid }) // in the paper Psid.OK()
 
-    type Output = Ok                                    // in the paper ok
-                | PartyRoundResponse ({ round: Round }) // in the paper r
-                | Failed                                // in the paper ⊥
+    type Output = ()
 
     type Incoming = AdversaryRoundRequest ({ sid : Sid }) // in the paper Sim.Round() but adapted to the real world model
                    | Corrupt               ({ p_sid : P_Sid }) // note: modelling corruptions like Universally Composable Synchronous Computation instead
@@ -62,7 +61,7 @@ module rw_adversary {
 
     type Input = Corrupt ({ p_sid : P_Sid })
 
-    type Output = Corrupted ({ p_sid : P_Sid })
+    type Output = ()
 
     type Incoming = RoundResponse ({ round : Round })
                    | Ok ({ p_sid : P_Sid })
@@ -75,6 +74,24 @@ module rw_adversary {
         parties_that_oked : Set[P_Sid],
         corrupted_parties : Set[P_Sid]
     }
+}
+
+module rw_environment {
+    import utils.*
+    import uc.*
+
+    type Input = ()
+
+    type Output = Corrupted          ({ p_sid : P_Sid })
+                | Ok                 ({ p_sid : P_Sid }) // in the paper ok
+                | PartyRoundResponse ({ round: Round })  // in the paper r
+                | Failed             ({ p_sid : P_Sid }) // in the paper ⊥
+
+    type Incoming = ()
+
+    type Outgoing = ()
+
+    type EnvironmentITM = ITM[Input, Output, Incoming, Outgoing]
 }
 
 module rw {
