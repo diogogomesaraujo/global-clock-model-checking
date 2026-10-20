@@ -1,5 +1,60 @@
 // Model Checking a real-world and ideal GClock in the UC framework.
 
+// Crossing with Confidence: Formal Analysis and
+// Model Checking of Blockchain Bridges GClock
+
+// Functionality 5: G-Clock[P]
+//
+// Init()
+// 1:  r ← 0; Reg ← ∅; Done[∗] ← 0
+//
+// Psid.Reg()                      // any sid
+// 2:  Reg ← Reg ∪ {Psid}
+// 3:  if Psid ∉ Reg then
+// 4:      Done[Psid] ← 0
+// 5:  return ok
+//
+// Psid.Round()                    // any sid
+// 6:  return r
+//
+// Sim.Round()
+// 7:  return r
+//
+// Psid.OK()                       // any sid
+// 8:  if Psid ∉ Reg then return ⊥
+// 9:  Done[Psid] ← 1
+// 10: flag ← 1
+// 11: for P'sid' ∈ Reg \ C do
+// 12:     if Done[P'sid'] = 0 then
+// 13:         flag ← 0
+// 14: if flag = 1 then
+// 15:     r ← r + 1
+// 16:     for P'sid' ∈ Reg \ C do
+// 17:         Done[P'sid'] ← 0
+// 18:     Sim(Psid.OK)
+// 19: return ok
+
+// Universally Composable Synchronous Computation FClock
+
+// Functionality F_clock(P)
+//
+// Initialize for each p_i ∈ P a bit d_i := 0.
+//
+// – Upon receiving message (RoundOK) from party p_i:
+//       set d_i := 1.
+//       If for all p_j ∈ H : d_j = 1, then
+//           reset d_j := 0 for all p_j ∈ P.
+//       In any case, send (switch, p_i) to A.^a
+//
+// – Upon receiving (RequestRound) from p_i:
+//       send d_i to p_i.
+//
+// – Upon receiving (corrupt, p_i) from A:
+//       set H := H ∪ {p_i}.
+//
+// ^a The adversary is notified in each such call to allow attacks
+//   at any point in time.
+
 // References:
 // - UC rules: https://swayam-padhy.gitbook.io/
 // - GClock:   https://eprint.iacr.org/2026/292.pdf,
@@ -67,7 +122,7 @@ module rw_clock {
     // registered it sets done[P_Sid] to 0.
     // Finally it puts an Ok message in Z's output-tape.
     action Register(GClock, P_Sid, Z) = {
-        if (GClock.registered_parties.contains(P_Sid)) all {
+        if (not(GClock.registered_parties.contains(P_Sid))) all {
             GClock' = GClock.with( "registered_parties"
                             , GClock.registered_parties.union(Set(P_Sid))),
             Z' = Z.with("itm", Z.itm.with( "output"
@@ -76,7 +131,9 @@ module rw_clock {
         else all {
             GClock' = GClock.with("done" , GClock.done.put(P_Sid, Zero))
                           .with("registered_parties"
-                               , GClock.registered_parties.union(Set(P_Sid)))
+                               , GClock.registered_parties.union(Set(P_Sid))),
+            Z' = Z.with("itm", Z.itm.with( "output"
+                                         , Z.itm.output.append(environment::Ok({ p_sid : P_Sid }))))
         }
     }
 }
