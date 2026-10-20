@@ -1,65 +1,15 @@
 // Model Checking a real-world and ideal GClock in the UC framework.
 
-// Crossing with Confidence: Formal Analysis and
-// Model Checking of Blockchain Bridges GClock
-
-// Functionality 5: G-Clock[P]
-//
-// Init()
-// 1:  r ← 0; Reg ← ∅; Done[∗] ← 0
-//
-// Psid.Reg()                      // any sid
-// 2:  Reg ← Reg ∪ {Psid}
-// 3:  if Psid ∉ Reg then
-// 4:      Done[Psid] ← 0
-// 5:  return ok
-//
-// Psid.Round()                    // any sid
-// 6:  return r
-//
-// Sim.Round()
-// 7:  return r
-//
-// Psid.OK()                       // any sid
-// 8:  if Psid ∉ Reg then return ⊥
-// 9:  Done[Psid] ← 1
-// 10: flag ← 1
-// 11: for P'sid' ∈ Reg \ C do
-// 12:     if Done[P'sid'] = 0 then
-// 13:         flag ← 0
-// 14: if flag = 1 then
-// 15:     r ← r + 1
-// 16:     for P'sid' ∈ Reg \ C do
-// 17:         Done[P'sid'] ← 0
-// 18:     Sim(Psid.OK)
-// 19: return ok
-
-// Universally Composable Synchronous Computation FClock
-
-// Functionality F_clock(P)
-//
-// Initialize for each p_i ∈ P a bit d_i := 0.
-//
-// – Upon receiving message (RoundOK) from party p_i:
-//       set d_i := 1.
-//       If for all p_j ∈ H : d_j = 1, then
-//           reset d_j := 0 for all p_j ∈ P.
-//       In any case, send (switch, p_i) to A.^a
-//
-// – Upon receiving (RequestRound) from p_i:
-//       send d_i to p_i.
-//
-// – Upon receiving (corrupt, p_i) from A:
-//       set H := H ∪ {p_i}.
-//
-// ^a The adversary is notified in each such call to allow attacks
-//   at any point in time.
-
 // References:
 // - UC rules: https://swayam-padhy.gitbook.io/
 // - GClock:   https://eprint.iacr.org/2026/292.pdf,
 //             https://eprint.iacr.org/2011/310.pdf
 // - Quint:    https://quint.sh/quint-cheatsheet.pdf
+
+// -----------------------------------------------------------------
+
+// Utils
+// ^^^^^
 
 module utils {
     type Round = int
@@ -73,7 +23,14 @@ module utils {
     pure def One = true
 
     pure def Zero = false
+
+    pure def InvalidP_Sid = -1
+
+    pure def FirstRound = 0
 }
+
+// UC Framework
+// ^^^^^^^^^^^^
 
 module uc {
     import utils.*
@@ -87,13 +44,24 @@ module uc {
         incomming_messages : List[Message[in_msg]],
         outgoing_messages  : List[Message[out_msg]]
     }
+
+    pure def ItmInit(sid : Sid) : ITM = {
+        sid                : sid,
+        input              : [],
+        output             : [],
+        incomming_messages : [],
+        outgoing_messages  : []
+    }
 }
+
+// -----------------------------------------------------------------
+
+// GClock
+// ^^^^^^
 
 module rw_clock {
     import utils.*
     import uc.*
-    import rw_environment 
-    as environment
 
     type Input = Reg               ({ p_sid : P_Sid }) // in the paper Psid.Reg()
                | PartyRoundRequest ({ p_sid : P_Sid }) // in the paper Psid.Round()
@@ -116,27 +84,51 @@ module rw_clock {
         corrupted_parties  : Set[P_Sid],   // in the paper C
         done               : P_Sid -> Flag // in the paper Done
     }
-    
-    // Action called by the clock when receiving a Reg request from Z.
+}
+
+module rw_clock_actions {
+    import utils.*
+    import uc.*
+
+    import rw_clock as clock
+    import rw_party as party
+
+    action Init(GClock) = {
+        GClock' = {
+            itm                : ItmInit(G_Clock),
+            current_round      : FirstRound,
+            registered_parties : Set(),
+            corrupted_parties  : Set(),
+            done               : Map()
+        }
+    }
+
+    // Action called by the clock when receiving a Reg request from P.
     // It registers the party with sid P_Sid and, if it was not previously
     // registered it sets done[P_Sid] to 0.
-    // Finally it puts an Ok message in Z's output-tape.
-    action Register(GClock, P_Sid, Z) = {
-        if (not(GClock.registered_parties.contains(P_Sid))) all {
+    // Finally it puts an Ok message in P's output-tape.
+    action Register(GClock, P) = {
+        if (GClock.registered_parties.contains(party::p_sid(P))) all {
             GClock' = GClock.with( "registered_parties"
-                            , GClock.registered_parties.union(Set(P_Sid))),
-            Z' = Z.with("itm", Z.itm.with( "output"
-                                          , Z.itm.output.append(environment::Ok({ p_sid : P_Sid }))))
+                                 , GClock.registered_parties.union(Set(party::p_sid(P)))),
+            P' = P.with("itm", P.itm.with( "output"
+                                          , P.itm.output.append(party::Ok)))
         }
         else all {
-            GClock' = GClock.with("done" , GClock.done.put(P_Sid, Zero))
-                          .with("registered_parties"
-                               , GClock.registered_parties.union(Set(P_Sid))),
-            Z' = Z.with("itm", Z.itm.with( "output"
-                                         , Z.itm.output.append(environment::Ok({ p_sid : P_Sid }))))
+            GClock' = GClock.with( "done" 
+                                 , GClock.done.put(party::p_sid(P), Zero))
+                            .with( "registered_parties"
+                                 , GClock.registered_parties.union(Set(party::p_sid(P)))),
+            P' = P.with("itm", P.itm.with( "output"
+                                         , P.itm.output.append(party::Ok)))
         }
     }
 }
+
+// -----------------------------------------------------------------
+
+// Adversary
+// ^^^^^^^^^
 
 module rw_adversary {
     import utils.*
@@ -160,6 +152,26 @@ module rw_adversary {
     }
 }
 
+module rw_adversary_actions {
+    import uc.*
+    import utils.*
+    
+    import utils as utils
+
+    action Init(A) = {
+        A' = {
+            itm               : ItmInit(utils::A),
+            parties_that_oked : Set(),
+            corrupted_parties : Set(),
+        }
+    }
+}
+
+// -----------------------------------------------------------------
+
+// Environment
+// ^^^^^^^^^^^
+
 module rw_environment {
     import utils.*
     import uc.*
@@ -168,7 +180,7 @@ module rw_environment {
 
     type Output = Corrupted          ({ p_sid : P_Sid })
                 | Ok                 ({ p_sid : P_Sid }) // in the paper ok
-                | PartyRoundResponse ({ round: Round })  // in the paper r
+                | PartyRoundResponse ({ round : Round }) // in the paper r
                 | Failed             ({ p_sid : P_Sid }) // in the paper ⊥
 
     type Incoming = ()
@@ -182,15 +194,35 @@ module rw_environment {
     }
 }
 
+module rw_environment_actions {
+    import utils
+    import uc.*
+
+    import rw_environment as environment
+
+    action Init(Z) = {
+        Z' = {
+            itm : ItmInit(utils::Z),
+        }
+    }
+}
+
+// -----------------------------------------------------------------
+
+// Party
+// ^^^^^
+
 module rw_party {
     import utils.*
     import uc.*
 
-    type Input = RoundResponse ({ round : Round }) // in the paper Psid.Round()
-               | Ok                                // in the paper Psid.OK()
-               | Failed        ({ p_sid : P_Sid }) // in the paper ⊥
+    type Input = Reg          // in the paper Psid.Reg()
+               | RoundRequest // in the paper Psid.Round()
+               | RoundOk      // in the paper Psid.OK()
 
-    type Output = ()
+    type Output = RoundResponse ({ round : Round }) // in the paper Psid.Round()
+               | Ok                                 // in the paper Psid.OK()
+               | Failed                             // in the paper ⊥
 
     type Incoming = ()
 
@@ -201,42 +233,50 @@ module rw_party {
     type PartyState = {
         itm : PartyITM,
     }
+
+    pure def p_sid(P : PartyState) : P_Sid = {
+        match (P.itm.sid) {
+            | P(p_sid) => p_sid
+            | A        => InvalidP_Sid
+            | Z        => InvalidP_Sid
+            | G_Clock  => InvalidP_Sid
+        }
+    }
 }
 
-module rw {
-    // The real-life model for executing protocol P with environment Z
-    // consists of a system of interacting ITMs (Interactive Turing Machines).
+module rw_party_actions {
+    import uc.*
+    import utils
 
-    // 1. Initial ITM:
-    // The environment Z is the initial ITM and has a fixed ID.
+    import rw_party       as party
+    import rw_clock       as clock
+    import rw_environment as environment
 
-    // 2. Control Function:
+    action Init(P, P_Sid) = {
+        P' = {
+            itm : ItmInit(utils::P(P_Sid)),
+        }
+    }
 
-    // Environment Z:
-    // - Can activate a single instance of adversary A.
-    // - Can activate multiple instances of protocol P.
-    // - All instances of A and P share the same SID.
-    // - Can write to the input tapes of the activated ITMs.
+    // Action called by the environment.
+    // Finally it puts an Ok message in Z's output-tape.
+    action Register(P, GClock, Z) = all {
+        GClock' = GClock.with( "itm"
+                             , GClock.itm.with( "input"
+                                              , GClock.itm.input.append(clock::Reg ({ 
+                                                                            p_sid : party::p_sid(P) 
+                                                                        })))),
+        Z' = Z.with( "itm"
+                   , Z.itm.with( "output"
+                               , Z.itm.output.append(environment::Ok({ p_sid : party::p_sid(P) }))))
+    }
+}
 
-    // Adversary A:
-    // - Can write to the incoming communication tapes of all protocol parties.
-    // - Can write to the subroutine output tape of environment Z.
+// -----------------------------------------------------------------
 
-    // Other ITMs:
-    // - Can write to the incoming communication tape of adversary A.
-    // - Can invoke new ITMs.
-    // - Can write to the subroutine output tape of their invoker.
-    // - Can write to the input tapes of their subroutines.
+// Real-world Model
+// ^^^^^^^^^^^^^^^^
 
-    // 3. Modeling Corruptions:
-    // The adversary A can corrupt an ITM M by writing a "corrupt"
-    // message to M's incoming communication tape.
-
-    // Once M receives the corruption request:
-    // - M writes "corrupted" to the subroutine output tape of Z.
-    // - During every subsequent activation, M sends its entire state to A.
-    // - A assumes all write privileges previously held by M.
-    // - M effectively operates under the control of A.
-    
+module rw {    
     import utils.*
 }
