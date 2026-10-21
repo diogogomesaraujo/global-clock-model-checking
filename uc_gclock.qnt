@@ -23,23 +23,33 @@
 module utils {
     type Round = int
 
+    pure def FirstRound = 0
+
+    // ^^^^^
+    
     type P_Sid = int
 
     type Sid = S | Z | P(P_Sid) | G_Clock
 
-    type Flag = bool
+    pure def InvalidP_Sid = -1
 
-    type Pointer = int // points to the element it will evaluate (not the one it has already evaluated) 
+    // ^^^^^
+
+    type Flag = bool
 
     pure def One = true
 
     pure def Zero = false
 
-    pure def InvalidP_Sid = -1
+    // ^^^^^
 
-    pure def FirstRound = 0
+    type Pointer = int // points to the element it will evaluate (not the one it has already evaluated) 
 
     pure def NotPointing = 0
+
+    // ^^^^^
+
+    type Option[a] = Some(a) | None
 }
 
 // UC Framework
@@ -48,44 +58,66 @@ module utils {
 module uc {
     import utils.*
 
-    type ITM[in, out, in_msg, out_msg] = {
+    type ITM[in, out, in_msg] = {
         sid                : Sid,
         input              : List[in],
         output             : List[out],
         incoming_messages : List[in_msg],
-        outgoing_messages  : List[out_msg],
         input_pointer      : Pointer,
         output_pointer     : Pointer,
         incoming_pointer  : Pointer,
-        outgoing_pointer   : Pointer
     }
 
     pure def ItmInit(sid : Sid) : ITM = {
-        sid                : sid,
-        input              : [],
-        output             : [],
+        sid               : sid,
+        input             : [],
+        output            : [],
         incoming_messages : [],
-        outgoing_messages  : [],
-        input_pointer      : NotPointing,
-        output_pointer     : NotPointing,
+        input_pointer     : NotPointing,
+        output_pointer    : NotPointing,
         incoming_pointer  : NotPointing,
-        outgoing_pointer   : NotPointing,
     }
 
-    pure def AddInput(itm : ITM[a, b, c, d], msg : a) : ITM[a, b, c, d] = {
+    pure def AddInput(itm : ITM[a, b, c], msg : a) : ITM[a, b, c] = {
         itm.with("input", itm.input.append(msg))
     }
 
-    pure def AddOutput(itm : ITM[a, b, c, d], msg : b) : ITM[a, b, c, d] = {
+    pure def AddOutput(itm : ITM[a, b, c], msg : b) : ITM[a, b, c] = {
         itm.with("output", itm.output.append(msg))
     }
 
-    pure def AddIncoming(itm : ITM[a, b, c, d], msg : c) : ITM[a, b, c, d] = {
+    pure def AddIncoming(itm : ITM[a, b, c], msg : c) : ITM[a, b, c] = {
         itm.with("incoming_messages", itm.incoming_messages.append(msg))
     }
 
-    pure def AddOutgoing(itm : ITM[a, b, c, d], msg : d) : ITM[a, b, c, d] = {
-        itm.with("outgoing_messages", itm.outgoing_messages.append(msg))
+    pure def ReadNew(tape : List[a], pointer : Pointer) : Option[a] = {
+        if (length(tape)      == 0) None
+        else if (length(tape) <= pointer) None
+        else Some(tape[pointer])
+    }
+
+    pure def ReadNewInput(itm : ITM[a, b, c]) : Option[a] = {
+        ReadNew(itm.input, itm.input_pointer)
+    }
+
+    pure def ReadNewOutput(itm : ITM[a, b, c]) : Option[b] = {
+        ReadNew(itm.output, itm.output_pointer)
+    }
+
+    pure def ReadNewIncoming(itm : ITM[a, b, c]) : Option[c] = {
+        ReadNew(itm.incoming_messages, itm.incoming_pointer)
+    }
+
+    pure def IncrInputPointer(itm : ITM[a, b, c]) : ITM[a, b, c] = {
+        itm.with("input_pointer", itm.input_pointer + 1)
+    }
+
+    pure def IncrOutputPointer(itm : ITM[a, b, c]) : ITM[a, b, c] = {
+        itm.with("output_pointer", itm.output_pointer + 1)
+    }
+
+    pure def IncrIncomingPointer(itm : ITM[a, b, c]) : ITM[a, b, c] = {
+        itm.with("incoming_pointer", itm.incoming_pointer + 1)
     }
 }
 
@@ -101,16 +133,14 @@ module iw_clock {
     type Input = Reg               ({ p_sid : P_Sid }) // in the paper Psid.Reg()
                | PartyRoundRequest ({ p_sid : P_Sid }) // in the paper Psid.Round()
                | RoundOk           ({ p_sid : P_Sid }) // in the paper Psid.OK()
+               | Activate
 
     type Output = ()
 
     type Incoming = SimulatorRoundRequest // in the paper Sim.Round() but adapted to the real world model
                    | Corrupt              ({ p_sid : P_Sid }) // note: modelling corruptions like Universally Composable Synchronous Computation instead
 
-    type Outgoing = SimulatorRoundResponse ({ round : Round }) // in the paper r
-                  | SimulatorOk            ({ p_sid : P_Sid }) // in the paper Sim(Psid.OK)
-
-    type ClockITM = ITM[Input, Output, Incoming, Outgoing]
+    type ClockITM = ITM[Input, Output, Incoming]
 
     type ClockState = {
         itm                : ClockITM,
@@ -119,6 +149,8 @@ module iw_clock {
         corrupted_parties  : Set[P_Sid],   // in the paper C
         done               : P_Sid -> Flag // in the paper Done
     }
+
+    type Actions = RdInput | RdIncoming | RdOutput
 }
 
 module iw_clock_actions {
@@ -213,22 +245,23 @@ module iw_simulator {
     import utils.*
     import uc.*
 
-    type Input = Corrupt ({ p_sid : P_Sid })
+    type Input = | Activate
 
     type Output = ()
 
     type Incoming = RoundResponse ({ round : Round })
-                   | Ok ({ p_sid : P_Sid })
+                   | Ok           ({ p_sid : P_Sid })
 
-    type Outgoing = RoundRequest ({ sid : Sid })
 
-    type SimulatorITM = ITM[Input, Output, Incoming, Outgoing]
+    type SimulatorITM = ITM[Input, Output, Incoming]
 
     type SimulatorState = { 
         itm               : SimulatorITM,
         parties_that_oked : Set[P_Sid],
         corrupted_parties : Set[P_Sid]
     }
+
+    type Actions = Corrupt | RdIncoming | RdOutput
 }
 
 module iw_simulator_actions {
@@ -273,9 +306,7 @@ module iw_environment {
 
     type Incoming = ()
 
-    type Outgoing = ()
-
-    type EnvironmentITM = ITM[Input, Output, Incoming, Outgoing]
+    type EnvironmentITM = ITM[Input, Output, Incoming]
 
     type EnvironmentState = {
         itm : EnvironmentITM,
@@ -286,21 +317,25 @@ module iw_environment_actions {
     import utils
     import uc.*
 
+    import iw_party       as party
+    import iw_simulator   as simulator
     import iw_environment as environment
 
     // Action called by the model checker.
-    // It initializes Z's state.
-    action Init(Z) = {
+    // It initializes Z's state and activates S and all dummy parties.
+    action Init(Z, S, Parties) = all {
         Z' = {
             itm : ItmInit(utils::Z),
-        }
+        },
+        S' = S.with("itm", AddInput(S.itm, simulator::Activate)),
+        Parties' = Parties.map(p => p.with("itm", AddInput(p.itm, party::Activate)))
     }
 }
 
 // -----------------------------------------------------------------
 
-// Party
-// ^^^^^
+// Dummy Party
+// ^^^^^^^^^^^
 
 module iw_party {
     import utils.*
@@ -316,13 +351,13 @@ module iw_party {
 
     type Incoming = ()
 
-    type Outgoing = ()
-
-    type PartyITM = ITM[Input, Output, Incoming, Outgoing]
+    type PartyITM = ITM[Input, Output, Incoming]
 
     type PartyState = {
         itm : PartyITM,
     }
+
+    type Parties = Set[PartyState]
 
     pure def p_sid(P : PartyState) : P_Sid = {
         match (P.itm.sid) {
@@ -330,6 +365,8 @@ module iw_party {
             | _        => InvalidP_Sid
         }
     }
+
+    type Actions = | Activate
 }
 
 module iw_party_actions {
