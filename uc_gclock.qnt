@@ -1,4 +1,5 @@
-// Model Checking a real-world and ideal GClock in the UC framework.
+// Model Checking a real-world clock constructions against the ideal functionality
+// GClock in the UC framework.
 
 // Prove there exists π, A, Z s.t. forall S : EXEC_{π,A,Z} ≉ EXEC_{GClock,S,Z}
 
@@ -19,6 +20,10 @@
 
 // Utils
 // ^^^^^
+
+module assumptions {
+    pure val NumberOfParties = 10
+}
 
 module utils {
     type Round = int
@@ -50,6 +55,8 @@ module utils {
     // ^^^^^
 
     type Option[a] = Some(a) | None
+
+    // ^^^^^
 }
 
 // UC Framework
@@ -133,11 +140,10 @@ module iw_clock {
     type Input = Reg               ({ p_sid : P_Sid }) // in the paper Psid.Reg()
                | PartyRoundRequest ({ p_sid : P_Sid }) // in the paper Psid.Round()
                | RoundOk           ({ p_sid : P_Sid }) // in the paper Psid.OK()
-               | Activate
 
     type Output = ()
 
-    type Incoming = SimulatorRoundRequest // in the paper Sim.Round() but adapted to the real world model
+    type Incoming = SimulatorRoundRequest                     // in the paper Sim.Round() but adapted to the real world model
                    | Corrupt              ({ p_sid : P_Sid }) // note: modelling corruptions like Universally Composable Synchronous Computation instead
 
     type ClockITM = ITM[Input, Output, Incoming]
@@ -178,27 +184,29 @@ module iw_clock_actions {
     // It registers the party with sid P_Sid and, if it was not previously
     // registered it sets done[P_Sid] to 0.
     // Finally it puts an Ok message in P's output-tape.
-    action Register(GClock, P) = {
-        if (GClock.registered_parties.contains(party::p_sid(P))) all {
+    action Register(GClock, Parties, p_sid) = {
+        if (GClock.registered_parties.contains(p_sid)) all {
             GClock' = GClock.with( "registered_parties"
-                                 , GClock.registered_parties.union(Set(party::p_sid(P)))),
-            P' = P.with("itm", AddOutput(P.itm, party::Ok))
+                                 , GClock.registered_parties.union(Set(p_sid))),
+            Parties' = Parties.put(p_sid, Parties.get(p_sid).with("itm", AddOutput(Parties.get(p_sid).itm, party::Ok)))
         }
         else all {
             GClock' = GClock.with( "done" 
-                                 , GClock.done.put(party::p_sid(P), Zero))
+                                 , GClock.done.put(p_sid, Zero))
                             .with( "registered_parties"
-                                 , GClock.registered_parties.union(Set(party::p_sid(P)))),
-            P' = P.with("itm", AddOutput(P.itm, party::Ok))
+                                 , GClock.registered_parties.union(Set(p_sid))),
+            Parties' = Parties.put(p_sid, Parties.get(p_sid).with("itm", AddOutput(Parties.get(p_sid).itm, party::Ok)))
         }
     }
 
     // Action called by the clock when receiving a PartyRoundRequest request 
     // from P on the input tape.
     // Finally it puts a RoundResponse message in P's output-tape.
-    action PartyRound(GClock, P) = {
-        P' = P.with( "itm"
-                   , AddOutput(P.itm, party::RoundResponse({ round : GClock.current_round })))
+    action PartyRound(GClock, Parties, p_sid) = {
+        Parties' = Parties.put( p_sid
+                               , Parties.get(p_sid).with( "itm"
+                                                        , AddOutput( Parties.get(p_sid).itm
+                                                                   , party::RoundResponse({ round : GClock.current_round }))))
     }
 
     // Action called by the clock when receiving a Sim.Round() request 
@@ -209,15 +217,15 @@ module iw_clock_actions {
                    , AddIncoming(S.itm, simulator::RoundResponse({ round : GClock.current_round })))
     }
 
-    action Ok(GClock, P, S) = {
-        if (not(GClock.registered_parties.contains(party::p_sid(P)))) all {
-            P' = P.with( "itm"
-                        , AddOutput(P.itm, party::Failed)),
+    action Ok(GClock, Parties, p_sid, S) = {
+        if (not(GClock.registered_parties.contains(p_sid))) all {
+            Parties' = Parties.put(p_sid, Parties.get(p_sid).with( "itm"
+                                                                 , AddOutput(Parties.get(p_sid).itm, party::Failed))),
             S' = S,
             GClock' = GClock
         } else all { 
             if (not((GClock.registered_parties.exclude(GClock.corrupted_parties))
-                            .exists(sid => GClock.done.put(party::p_sid(P), One).get(sid) == Zero)))
+                            .exists(sid => GClock.done.put(p_sid, One).get(sid) == Zero)))
                 GClock' = GClock.with( "done"
                                      , GClock.done.keys().mapBy(k => 
                                             if(GClock.registered_parties
@@ -227,13 +235,48 @@ module iw_clock_actions {
                                                      .with( "current_round"
                                                           , GClock.current_round + 1 )
             else GClock' = GClock.with( "done"
-                                      , GClock.done.put(party::p_sid(P), One) ),
+                                      , GClock.done.put(p_sid, One) ),
             S' = S.with( "itm"
-                       , AddIncoming(S.itm, simulator::Ok({ p_sid : party::p_sid(P) }))),
-            P' = P.with( "itm"
-                        , AddOutput(P.itm, party::Ok))
+                       , AddIncoming(S.itm, simulator::Ok({ p_sid : p_sid }))),
+            Parties' = Parties.put(p_sid, Parties.get(p_sid).with( "itm"
+                                                                 , AddOutput(Parties.get(p_sid).itm, party::Ok)))
         }
     }
+
+//     action Step(GClock, Z, S, Parties) = {
+//         nondet which = oneOf(Set(clock::RdInput, clock::RdIncoming, clock::RdOutput))
+//         match (which) {
+//             | clock::RdInput    => {
+//                 match (ReadNew(GClock.itm.input, GClock.itm.input_pointer)) {
+//                     Some(input_message) => {
+//                         match (input_message) {
+//                             | Reg(r)               => all {
+//                                 Register(GClock, Parties, r.p_sid)
+//                             }
+//                             | PartyRoundRequest(r) => all {
+//                                 PartyRound(GClock, Parties, r.p_sid)
+//                             }
+//                             | RoundOk(r)           => all {
+//                                 Ok(GClock, Parties, r.p_sid, S)
+//                             }
+//                         }
+//                     }
+//                     None                => all {
+//                         GClock'  = GClock,
+//                         Z'       = Z,
+//                         S'       = S,
+//                         Parties' = Parties
+//                     }
+//                 }
+//             }
+//             | clock::RdIncoming => {
+
+//             }
+//             | clock::RdOutput   => {
+
+//             }
+//         }
+//     }
 }
 
 // -----------------------------------------------------------------
@@ -245,7 +288,7 @@ module iw_simulator {
     import utils.*
     import uc.*
 
-    type Input = | Activate
+    type Input = ()
 
     type Output = ()
 
@@ -267,15 +310,16 @@ module iw_simulator {
 module iw_simulator_actions {
     import uc.*
     
-    import iw_clock as clock
-    import utils    as utils
+    import iw_simulator as simulator
+    import iw_clock     as clock
+    import utils        as utils
 
     // Action called by Z.
     // It initializes S's state.
     action Init(S) = {
         S' = {
-            itm               : ItmInit(utils::S),
-            parties_that_oked : Set(), // oked the current round
+            itm               : ItmInit(utils::S), // for now here because we don't need to consider the machine before activation
+            parties_that_oked : Set(),             // oked the current round
             corrupted_parties : Set(),
         }
     }
@@ -322,13 +366,11 @@ module iw_environment_actions {
     import iw_environment as environment
 
     // Action called by the model checker.
-    // It initializes Z's state and activates S and all dummy parties.
-    action Init(Z, S, Parties) = all {
+    // It initializes Z's state.
+    action Init(Z) = all {
         Z' = {
             itm : ItmInit(utils::Z),
         },
-        S' = S.with("itm", AddInput(S.itm, simulator::Activate)),
-        Parties' = Parties.map(p => p.with("itm", AddInput(p.itm, party::Activate)))
     }
 }
 
@@ -357,7 +399,7 @@ module iw_party {
         itm : PartyITM,
     }
 
-    type Parties = Set[PartyState]
+    type Parties = P_Sid -> PartyState
 
     pure def p_sid(P : PartyState) : P_Sid = {
         match (P.itm.sid) {
@@ -366,11 +408,13 @@ module iw_party {
         }
     }
 
-    type Actions = | Activate
+    type Actions = ()
 }
 
 module iw_party_actions {
     import uc.*
+    import assumptions.*
+
     import utils
 
     import iw_party       as party
@@ -379,54 +423,52 @@ module iw_party_actions {
 
     // Action called by Z.
     // It initializes P's state.
-    action Init(P, P_Sid) = {
-        P' = {
-            itm : ItmInit(utils::P(P_Sid)),
-        }
+    action Init(Parties) = {
+        Parties' = 1.to(NumberOfParties).mapBy(i => ({ itm : ItmInit(utils::P(i)) }))
     }
 
     // Action called by the party when receiving Reg from Z on
     // the input-tape.
     // Finally it puts an Reg message in the G-Clock's output-tape.
-    action Register(P, GClock, Z) = {
+    action Register(p_sid, GClock, Z) = {
         GClock' = GClock.with( "itm"
-                             , AddInput(GClock.itm, clock::Reg({ p_sid : party::p_sid(P) })))
+                             , AddInput(GClock.itm, clock::Reg({ p_sid : p_sid })))
     }
 
-    action RegisterResponse(P, Z, response) = {
+    action RegisterResponse(p_sid, Z, response) = {
         Z' = Z.with( "itm"
                    , AddOutput( Z.itm
                               , match response {
-                                    | Ok     => environment::RegisterOk({ p_sid : party::p_sid(P) })
-                                    | Failed => environment::Failed({ p_sid : party::p_sid(P) })
-                                    | _      => environment::Failed({ p_sid : party::p_sid(P) })
+                                    | Ok     => environment::RegisterOk({ p_sid : p_sid })
+                                    | Failed => environment::Failed({ p_sid : p_sid })
+                                    | _      => environment::Failed({ p_sid : p_sid })
                                 }))
     }
 
-    action Round(GClock, P) = {
+    action Round(GClock, p_sid) = {
         GClock' = GClock.with( "itm"
                              , AddInput( GClock.itm
-                                        , clock::PartyRoundRequest({ p_sid : party::p_sid(P) })))
+                                        , clock::PartyRoundRequest({ p_sid : p_sid })))
     }
 
-    action RoundResponse(P, Z, round) = {
+    action RoundResponse(p_sid, Z, round) = {
         Z' = Z.with( "itm"
-                   , AddOutput(Z.itm, environment::PartyRound({ p_sid : party::p_sid(P)
+                   , AddOutput(Z.itm, environment::PartyRound({ p_sid : p_sid
                                                               , round : round })))
     }
 
-    action Ok(GClock, P) = {
+    action Ok(GClock, p_sid) = {
         GClock' = GClock.with( "itm"
-                             , AddInput(GClock.itm, clock::RoundOk({ p_sid : party::p_sid(P) })))
+                             , AddInput(GClock.itm, clock::RoundOk({ p_sid : p_sid })))
     }
 
-    action OkResponse(P, Z, response) = {
+    action OkResponse(p_sid, Z, response) = {
         Z' = Z.with( "itm"
                    , AddOutput( Z.itm
                               , match response {
-                                    | Ok     => environment::RoundOk({ p_sid : party::p_sid(P) })
-                                    | Failed => environment::Failed({ p_sid : party::p_sid(P) })
-                                    | _      => environment::Failed({ p_sid : party::p_sid(P) })
+                                    | Ok     => environment::RoundOk({ p_sid : p_sid })
+                                    | Failed => environment::Failed({ p_sid : p_sid })
+                                    | _      => environment::Failed({ p_sid : p_sid })
                                 }))
     }
 }
@@ -437,7 +479,34 @@ module iw_party_actions {
 // ^^^^^^^^^^^^^^^^
 
 module iw {    
-    import utils.*
+    import uc as uc
+
+    import utils as utils
+
+    import iw_party_actions       as party_actions
+    import iw_clock_actions       as clock_actions
+    import iw_environment_actions as environment_actions
+    import iw_simulator_actions   as simulator_actions
+
+    import iw_clock       as clock
+    import iw_simulator   as simulator
+    import iw_environment as environment
+    import iw_party       as party
+
+    var Z       : environment::EnvironmentState
+    var S       : simulator::SimulatorState
+    var GClock  : clock::ClockState
+    var Parties : party::Parties
+
+    // all parties begin already activated by the environment. 
+    // in the ideal world he assume all parties are registered before
+    // they start interacting with the GClock. 
+    action Init = all {
+        environment_actions::Init(Z),
+        simulator_actions::Init(S),
+        clock_actions::Init(GClock),
+        party_actions::Init(Parties)
+    }
 }
 
 // -----------------------------------------------------------------
