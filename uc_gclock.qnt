@@ -22,7 +22,7 @@
 // ^^^^^
 
 module assumptions {
-    pure val NumberOfParties = 10
+    pure val NumberOfParties = 2
 }
 
 module utils {
@@ -84,7 +84,7 @@ module uc {
                                     | IncrementOutputPointer
                                     | IncrementIncomingPointer
 
-    pure def ItmInit(sid : Sid) : ITM = {
+    pure def ItmInit(sid) = {
         sid               : sid,
         input             : [],
         output            : [],
@@ -94,7 +94,7 @@ module uc {
         incoming_pointer  : NotPointing,
     }
 
-    pure def ApplyEffect(itm : ITM[a, b, c], effect : ItmEffect) : ITM[a, b, c] = {
+    pure def ApplyEffect(itm, effect) = {
         match (effect) {
             | UpdateInput(msg)         => itm.with("input", itm.input.append(msg))
             | UpdateOutput(msg)        => itm.with("output", itm.output.append(msg))
@@ -105,25 +105,25 @@ module uc {
         }
     }
 
-    pure def ApplyEffects(state : s, effects : Effects[e]) : s = {
-        effects.foldl(state, (acc, e) => ApplyEffect(state, e))
+    pure def ApplyEffects(state, effects) = {
+        effects.foldl(state, (acc, e) => ApplyEffect(acc, e))
     }
 
-    pure def ReadNew(tape : List[a], pointer : Pointer) : Option[a] = {
+    pure def ReadNew(tape, pointer) = {
         if (length(tape)      == 0) None
         else if (length(tape) <= pointer) None
         else Some(tape[pointer])
     }
 
-    pure def ReadNewInput(itm : ITM[a, b, c]) : Option[a] = {
+    pure def ReadNewInput(itm) = {
         ReadNew(itm.input, itm.input_pointer)
     }
 
-    pure def ReadNewOutput(itm : ITM[a, b, c]) : Option[b] = {
+    pure def ReadNewOutput(itm) = {
         ReadNew(itm.output, itm.output_pointer)
     }
 
-    pure def ReadNewIncoming(itm : ITM[a, b, c]) : Option[c] = {
+    pure def ReadNewIncoming(itm) = {
         ReadNew(itm.incoming_messages, itm.incoming_pointer)
     }
 }
@@ -168,26 +168,22 @@ module iw_clock {
         done               : P_Sid -> Flag // in the paper Done
     }
 
-    type Actions = RdInput | RdIncoming | RdOutput
+    type Action = RdInput | RdIncoming 
 
-    type ClockEffect = UpdateItm(uc::ItmEffect)
+    type ClockEffect = ClockUpdateItm(uc::ItmEffect)
                      | IncrementRound
                      | UpdateRegistered(P_Sid)
                      | UpdateCorrupted(P_Sid)
                      | UpdateDone({ p_sid : P_Sid, flag : Flag})
 
-    pure def ApplyEffect(state : ClockState, effect : ClockEffect) : ClockState = {
+    pure def ApplyEffect(state, effect) = {
         match (effect) {
-            | UpdateItm(e)            => state.with("itm", uc::ApplyEffect(state.itm, e))
+            | ClockUpdateItm(e)            => state.with("itm", uc::ApplyEffect(state.itm, e))
             | UpdateRegistered(p_sid) => state.with("registered_parties", state.registered_parties.union(Set(p_sid)))
             | UpdateCorrupted(p_sid)  => state.with("corrupted_parties", state.corrupted_parties.union(Set(p_sid)))
             | UpdateDone(d)           => state.with("done", state.done.put(d.p_sid, d.flag))
             | IncrementRound          => state.with("current_round", state.current_round + 1)
         }
-    }
-
-    pure def ApplyEffects(state : ClockState, effects : Effects[ClockEffect]) : ClockState = {
-        effects.foldl(state, (acc, e) => ApplyEffect(state, e))
     }
 }
 
@@ -196,20 +192,19 @@ module iw_clock_actions {
     import uc.*
     import effect.*
 
-    import iw_clock     as clock
-    import iw_party     as party
-    import iw_simulator as simulator
+    import iw_clock       as clock
+    import iw_party       as party
+    import iw_simulator   as simulator
+    import iw_environment as environment
 
     // Action called by Z.
     // It initializes the G-Clock's state.
-    action Init(GClock) = {
-        GClock' = {
-            itm                : ItmInit(G_Clock),
-            current_round      : FirstRound,
-            registered_parties : Set(),
-            corrupted_parties  : Set(),
-            done               : Map()
-        }
+    pure def Init() = {
+        itm                : ItmInit(G_Clock),
+        current_round      : FirstRound,
+        registered_parties : Set(),
+        corrupted_parties  : Set(),
+        done               : Map()
     }
 
     // Action called by the clock when receiving a Reg request from P on the 
@@ -217,82 +212,81 @@ module iw_clock_actions {
     // It registers the party with sid P_Sid and, if it was not previously
     // registered it sets done[P_Sid] to 0.
     // Finally it puts an Ok message in P's output-tape.
-    pure def Register(GClock : clock::ClockState, Parties : party::Parties, p_sid : P_Sid) : Effects[IwEffect] = {
+    pure def Register(GClock, p_sid) = {
         val effects = [GClockEffect(clock::UpdateRegistered(p_sid))]
-        if (GClock.registered_parties.contains(p_sid)) all {
+        if (GClock.registered_parties.contains(p_sid)) {
             effects
-                .append(PEffect(party::UpdateItm({p_sid : p_sid, effect : UpdateInput(party::Ok)})))
+                .append(PEffect(party::PUpdateItm({p_sid : p_sid, effect : UpdateInput(party::Ok)})))
         }
-        else all {
+        else {
             effects
                 .append(GClockEffect(clock::UpdateDone({ p_sid : p_sid, flag: Zero })))
-                .append(PEffect(party::UpdateItm({ p_sid : p_sid, effect : UpdateInput(party::Ok) })))
+                .append(PEffect(party::PUpdateItm({ p_sid : p_sid, effect : UpdateInput(party::Ok) })))
         }
     }
 
     // Action called by the clock when receiving a PartyRoundRequest request 
     // from P on the input tape.
     // Finally it puts a RoundResponse message in P's output-tape.
-    pure def PartyRound(GClock : clock::ClockState, Parties : party::Parties, p_sid : p_sid) : Effects[IwEffect] = {
-        [PEffect(party::UpdateItm({ p_sid : p_sid, effect : UpdateOutput(party::RoundResponse({ round : GClock.current_round })) }))]
+    pure def PartyRound(GClock, p_sid) = {
+        [PEffect(party::PUpdateItm({ p_sid : p_sid, effect : UpdateOutput(party::RoundResponse({ round : GClock.current_round })) }))]
     }
 
     // Action called by the clock when receiving a Sim.Round() request 
     // from S on the incoming messages tape.
     // Finally it puts a RoundResponse message in S's incoming messages tape.
-    pure def SimulatorRound(GClock : clock::ClockState, S : simulator::SimulatorState) : Effects[IwEffect] = {
-        [SEffect(simulator::UpdateItm( UpdateOutput(simulator::RoundResponse({ round : GClock.current_round }))))]
+    pure def SimulatorRound(GClock) = {
+        [SEffect(simulator::SUpdateItm( UpdateOutput(simulator::RoundResponse({ round : GClock.current_round }))))]
     }
 
-    pure def Ok(GClock : clock::ClockState, Parties : party::Parties, p_sid : P_Sid, S : simulator::SimulatorState) : Effects[IwEffect] = {
-        if (not(GClock.registered_parties.contains(p_sid))) all {
-            [PEffect(party::UpdateItm({ p_sid : p_sid, effect : UpdateOutput(party::Failed) }))]
-        } else all { 
+    pure def Ok(GClock, p_sid) = {
+        if (not(GClock.registered_parties.contains(p_sid))) {
+            [PEffect(party::PUpdateItm({ p_sid : p_sid, effect : UpdateOutput(party::Failed) }))]
+        } else { 
             if (not((GClock.registered_parties.exclude(GClock.corrupted_parties))
                             .exists(sid => GClock.done.put(p_sid, One).get(sid) == Zero))) // because P stil has his flag set to O
                 GClock.done.keys().exclude(GClock.corrupted_parties).fold([], (acc, k) => 
-                    acc.append(GClockEffect(clock::UpdateDone({ p_sid : k, flag : Zero }))))
+                        acc.append(GClockEffect(clock::UpdateDone({ p_sid : k, flag : Zero }))))
                     .append(GClockEffect(clock::IncrementRound))
             else [ GClockEffect(clock::UpdateDone({ p_sid : p_sid, flag : One }))
-                 , SEffect(simulator::UpdateItm(UpdateIncoming(simulator::Ok({ p_sid : p_sid }))))
-                 , PEffect(party::UpdateItm({ p_sid : p_sid, effect : UpdateOutput(party::Ok) })) ]
+                 , SEffect(simulator::SUpdateItm(UpdateIncoming(simulator::Ok({ p_sid : p_sid }))))
+                 , PEffect(party::PUpdateItm({ p_sid : p_sid, effect : UpdateOutput(party::Ok) })) ]
         }
     }
 
-//     action Step(GClock, Z, S, Parties) = {
-//         nondet which = oneOf(Set(clock::RdInput, clock::RdIncoming, clock::RdOutput))
-//         match (which) {
-//             | clock::RdInput    => {
-//                 match (ReadNew(GClock.itm.input, GClock.itm.input_pointer)) {
-//                     Some(input_message) => {
-//                         match (input_message) {
-//                             | Reg(r)               => all {
-//                                 Register(GClock, Parties, r.p_sid)
-//                             }
-//                             | PartyRoundRequest(r) => all {
-//                                 PartyRound(GClock, Parties, r.p_sid)
-//                             }
-//                             | RoundOk(r)           => all {
-//                                 Ok(GClock, Parties, r.p_sid, S)
-//                             }
-//                         }
-//                     }
-//                     None                => all {
-//                         GClock'  = GClock,
-//                         Z'       = Z,
-//                         S'       = S,
-//                         Parties' = Parties
-//                     }
-//                 }
-//             }
-//             | clock::RdIncoming => {
+    pure def Corrupt(GClock, p_sid) = {
+        [GClockEffect(clock::UpdateCorrupted(p_sid))]
+    }
 
-//             }
-//             | clock::RdOutput   => {
-
-//             }
-//         }
-//     }
+    pure def Transition(which, GClock, Z, S, Parties) = {
+        match which {
+            | RdInput    => {
+                match ReadNew(GClock.itm.input, GClock.itm.input_pointer) {
+                    | Some(input_message) => {
+                        (match (input_message) {
+                            | Reg(r)               => Register(GClock, r.p_sid)
+                            | PartyRoundRequest(r) => PartyRound(GClock, r.p_sid)
+                            | RoundOk(r)           => Ok(GClock, r.p_sid)
+                            | _ => []
+                        }).append(GClockEffect(clock::ClockUpdateItm(IncrementInputPointer)))
+                    }
+                    | None => []
+                }
+            }
+            | RdIncoming => { 
+                match ReadNew(GClock.itm.incoming_messages, GClock.itm.incoming_pointer) {
+                    | Some(incoming_message) => {
+                        (match incoming_message {
+                            | SimulatorRoundRequest(r) =>
+                                SimulatorRound(GClock)
+                            | Corrupt(r) => Corrupt(GClock, r.p_sid)
+                        }).append(GClockEffect(clock::ClockUpdateItm(IncrementIncomingPointer)))
+                    }
+                    | None => []
+                }
+            }
+        }
+    }
 }
 
 // -----------------------------------------------------------------
@@ -320,16 +314,16 @@ module iw_simulator {
         corrupted_parties : Set[P_Sid],
     }
 
-    type Actions = Corrupt | RdIncoming | RdOutput
+    type Action = Corrupt | RoundRequest | RdIncoming | RdOutput
 
-    type SimulatorEffect = UpdateItm(uc::ItmEffect)
+    type SimulatorEffect = SUpdateItm(uc::ItmEffect)
                          | UpdatedOked(P_Sid)
                          | UpdateCorrupted(P_Sid)
 
-    pure def ApplyEffect(state : SimulatorState, effect : SimulatorEffect) : SimulatorState = {
-        match (effect) {
-            | UpdateItm(e)           => state.with("itm", uc::ApplyEffect(state.itm, e))
-            | UpdateOked(p_sid)      => state.with("parties_that_oked", state.parties_that_oked.union(Set(p_sid)))
+    pure def ApplyEffect(state, effect) = {
+        match effect {
+            | SUpdateItm(e)          => state.with("itm", uc::ApplyEffect(state.itm, e))
+            | UpdatedOked(p_sid)     => state.with("parties_that_oked", state.parties_that_oked.union(Set(p_sid)))
             | UpdateCorrupted(p_sid) => state.with("parties_that_oked", state.corrupted_parties.union(Set(p_sid)))
         }
     }
@@ -345,16 +339,19 @@ module iw_simulator_actions {
 
     // Action called by Z.
     // It initializes S's state.
-    action Init(S) = {
-        S' = {
-            itm               : ItmInit(utils::S), // for now here because we don't need to consider the machine before activation
-            parties_that_oked : Set(),             // oked the current round
-            corrupted_parties : Set(),
-        }
+    action Init() = {
+        itm               : ItmInit(utils::S), // for now here because we don't need to consider the machine before activation
+        parties_that_oked : Set(),             // oked the current round
+        corrupted_parties : Set(),
     }
 
-    pure def Round(GClock : clock::ClockState) : utils::Effects[IwEffect] = {
-        [GClockEffect(clock::UpdateItm(UpdateIncoming(clock::SimulatorRoundRequest)))]
+    pure def Round() = {
+        [GClockEffect(clock::ClockUpdateItm(UpdateIncoming(clock::SimulatorRoundRequest)))]
+    }
+
+    pure def Corrupt(p_sid) = {
+        [ GClockEffect(clock::ClockUpdateItm(UpdateIncoming(clock::Corrupt({ p_sid : p_sid }))))
+        , SEffect(simulator::UpdateCorrupted(p_sid)) ]
     }
 }
 
@@ -384,11 +381,11 @@ module iw_environment {
         itm : EnvironmentITM,
     }
 
-    type EnvironmentEffect = | UpdateItm(uc::ItmEffect)
+    type EnvironmentEffect = | ZUpdateItm(uc::ItmEffect)
 
-    pure def ApplyEffect(state : EnvironmentState, effect : EnvironmentEffect) : EnvironmentState = {
+    pure def ApplyEffect(state, effect) = {
         match (effect) {
-            | UpdateItm(e)           => state.with("itm", uc::ApplyEffect(state.itm, e))
+            | ZUpdateItm(e) => state.with("itm", uc::ApplyEffect(state.itm, e))
         }
     }
 }
@@ -403,11 +400,7 @@ module iw_environment_actions {
 
     // Action called by the model checker.
     // It initializes Z's state.
-    action Init(Z) = all {
-        Z' = {
-            itm : ItmInit(utils::Z),
-        },
-    }
+    pure def Init() = { itm : ItmInit(utils::Z) }
 }
 
 // -----------------------------------------------------------------
@@ -438,21 +431,21 @@ module iw_party {
 
     type Parties = P_Sid -> PartyState
 
-    pure def p_sid(P : PartyState) : P_Sid = {
+    pure def p_sid(P) = {
         match (P.itm.sid) {
             | P(p_sid) => p_sid
             | _        => InvalidP_Sid
         }
     }
 
-    type Actions = ()
+    type Action = RdInput | RdOutput 
 
-    type PartiesEffect = UpdateItm({p_sid : P_Sid, effect : uc::ItmEffect})
+    type PartiesEffect = PUpdateItm({p_sid : P_Sid, effect : uc::ItmEffect})
                        | UpdateRound({p_sid : P_Sid, round : Round})
 
-    pure def ApplyEffect(state : Parties, effect : PartiesEffect) : Parties = {
+    pure def ApplyEffect(state, effect) = {
         match (effect) {
-            | UpdateItm(r)   => state.put(r.p_sid, state.get(r.p_sid).with("itm", uc::ApplyEffect(state.get(r.p_sid).itm, r.effect)))
+            | PUpdateItm(r)   => state.put(r.p_sid, state.get(r.p_sid).with("itm", uc::ApplyEffect(state.get(r.p_sid).itm, r.effect)))
             | UpdateRound(r) => state.put(r.p_sid, state.get(r.p_sid).with("current_round", state.get(r.p_sid).current_round + 1))
         }
     }
@@ -471,38 +464,36 @@ module iw_party_actions {
 
     // Action called by Z.
     // It initializes P's state.
-    action Init(Parties) = {
-        Parties' = 1.to(NumberOfParties).mapBy(i => ({ itm : ItmInit(utils::P(i)), current_round : 0 }))
-    }
+    pure def Init() = 1.to(NumberOfParties).mapBy(i => ({ itm : ItmInit(utils::P(i)), current_round : 0 }))
 
     // Action called by the party when receiving Reg from Z on
     // the input-tape.
     // Finally it puts an Reg message in the G-Clock's output-tape.
-    pure def Register(p_sid : utils::P_Sid, GClock : clock::ClockState, Z : environment::EnvironmentState) : utils::Effects[IwEffect] = {
-        [GClockEffect(clock::UpdateItm(UpdateInput(clock::Reg({ p_sid : p_sid }))))]
+    pure def Register(p_sid, GClock, Z) = {
+        [GClockEffect(clock::ClockUpdateItm(UpdateInput(clock::Reg({ p_sid : p_sid }))))]
     }
 
-    pure def RegisterResponse(p_sid : utils::P_Sid, Z: environment::EnvironmentState, response : party::Output) : utils::Effects[IwEffect] = {
-        [ZEffect(environment::UpdateItm(UpdateOutput(match response {
+    pure def RegisterResponse(p_sid, Z, response) = {
+        [ZEffect(environment::ZUpdateItm(UpdateOutput(match response {
                                                         | Ok     => environment::RegisterOk({ p_sid : p_sid })
                                                         | Failed => environment::Failed({ p_sid : p_sid })
                                                         | _      => environment::Failed({ p_sid : p_sid }) })))]
     }
 
-    pure def Round(p_sid : utils::P_Sid, GClock: clock::ClockState) : utils::Effects[IwEffect] = {
-        [GClockEffect(clock::UpdateItm(UpdateInput(clock::PartyRoundRequest({ p_sid : p_sid }))))]
+    pure def Round(p_sid, GClock) = {
+        [GClockEffect(clock::ClockUpdateItm(UpdateInput(clock::PartyRoundRequest({ p_sid : p_sid }))))]
     }
 
-    action RoundToEnvironment(p_sid, Z, round) = {
-        [ZEffect(environment::UpdateItm(UpdateOutput(environment::PartyRound({ p_sid : p_sid, round : round }))))]
+    pure def RoundToEnvironment(p_sid , Z, round) = {
+        [ZEffect(environment::ZUpdateItm(UpdateOutput(environment::PartyRound({ p_sid : p_sid, round : round }))))]
     }
 
     action Ok(GClock, p_sid) = {
-        [GClockEffect(clock::UpdateItm(UpdateInput(clock::RoundOk({ p_sid : p_sid }))))]
+        [GClockEffect(clock::ClockUpdateItm(UpdateInput(clock::RoundOk({ p_sid : p_sid }))))]
     }
 
     action OkResponse(p_sid, Z, response) = {
-        [ZEffect(environment::UpdateItm(UpdateOutput(match response {
+        [ZEffect(environment::ZUpdateItm(UpdateOutput(match response {
                                                         | Ok     => environment::RoundOk({ p_sid : p_sid })
                                                         | Failed => environment::Failed({ p_sid : p_sid })
                                                         | _      => environment::Failed({ p_sid : p_sid })})))]
@@ -538,10 +529,10 @@ module iw {
     // in the ideal world he assume all parties are registered before
     // they start interacting with the GClock. 
     action Init = all {
-        environment_actions::Init(Z),
-        simulator_actions::Init(S),
-        clock_actions::Init(GClock),
-        party_actions::Init(Parties)
+        Z'       = environment_actions::Init,
+        S'       = simulator_actions::Init,
+        GClock'  = clock_actions::Init,
+        Parties' = party_actions::Init
     }
 }
 
