@@ -57,6 +57,8 @@ module utils {
     type Option[a] = Some(a) | None
 
     // ^^^^^
+
+    type Effects[a] = List[a]
 }
 
 // UC Framework
@@ -75,6 +77,13 @@ module uc {
         incoming_pointer  : Pointer,
     }
 
+    type ItmEffect[in, out, in_msg] = UpdateInput(in)
+                                    | UpdateOutput(out)
+                                    | UpdateIncoming(in_msg)
+                                    | IncrementInputPointer
+                                    | IncrementOutputPointer
+                                    | IncrementIncomingPointer
+
     pure def ItmInit(sid : Sid) : ITM = {
         sid               : sid,
         input             : [],
@@ -83,6 +92,21 @@ module uc {
         input_pointer     : NotPointing,
         output_pointer    : NotPointing,
         incoming_pointer  : NotPointing,
+    }
+
+    pure def ApplyEffect(itm : ITM[a, b, c], effect : ItmEffect) : ITM[a, b, c] = {
+        match (effect) {
+            | UpdateInput(msg)         => AddInput(itm, msg)
+            | UpdateOutput(msg)        => AddOutput(itm, msg)
+            | UpdateIncoming(msg)      => AddIncoming(itm, msg)
+            | IncrementInputPointer    => IncrInputPointer(itm)
+            | IncrementOutputPointer   => IncrOutputPointer(itm)
+            | IncrementIncomingPointer => IncrIncomingPointer(itm)
+        }
+    }
+
+    pure def ApplyEffects(itm : ITM[a, b, c], effects : Effects[ItmEffect]) : ITM[a, b, c] = {
+        effects.foldl(itm, (acc, e) => ApplyEffect(itm, e))
     }
 
     pure def AddInput(itm : ITM[a, b, c], msg : a) : ITM[a, b, c] = {
@@ -135,7 +159,7 @@ module uc {
 
 module iw_clock {
     import utils.*
-    import uc.*
+    import uc as uc
 
     type Input = Reg               ({ p_sid : P_Sid }) // in the paper Psid.Reg()
                | PartyRoundRequest ({ p_sid : P_Sid }) // in the paper Psid.Round()
@@ -146,7 +170,7 @@ module iw_clock {
     type Incoming = SimulatorRoundRequest                     // in the paper Sim.Round() but adapted to the real world model
                    | Corrupt              ({ p_sid : P_Sid }) // note: modelling corruptions like Universally Composable Synchronous Computation instead
 
-    type ClockITM = ITM[Input, Output, Incoming]
+    type ClockITM = uc::ITM[Input, Output, Incoming]
 
     type ClockState = {
         itm                : ClockITM,
@@ -157,6 +181,42 @@ module iw_clock {
     }
 
     type Actions = RdInput | RdIncoming | RdOutput
+
+    type ClockEffect = UpdateItm(uc::ItmEffect)
+                     | IncrementRound
+                     | UpdateRegistered(P_Sid)
+                     | UpdateCorrupted(P_Sid)
+                     | UpdateDone({ p_sid : P_Sid, flag : Flag})
+
+    pure def ApplyEffect(state : ClockState, effect : ClockEffect) : ClockState = {
+        match (effect) {
+            | UpdateItm(e)            => state.with("itm", uc::ApplyEffect(state.itm, e))
+            | UpdateRegistered(p_sid) => AddRegistered(state, p_sid)
+            | UpdateCorrupted(p_sid)  => AddCorrupted(state, p_sid)
+            | UpdateDone(d)           => AddDone(state, d.p_sid, d.flag)
+            | IncrementRound          => IncrRound(state)
+        }
+    }
+
+    pure def ApplyEffects(state : ClockState, effects : Effects[ClockEffect]) : ClockState = {
+        effects.foldl(state, (acc, e) => ApplyEffect(state, e))
+    }
+
+    pure def AddRegistered(state : ClockState, p_sid : P_Sid) : ClockState = {
+        state.with("registered_parties", state.registered_parties.union(Set(p_sid)))
+    }
+
+    pure def AddCorrupted(state : ClockState, p_sid : P_Sid) : ClockState = {
+        state.with("corrupted_parties", state.corrupted_parties.union(Set(p_sid)))
+    }
+
+    pure def AddDone(state : ClockState, p_sid : P_Sid, flag : Flag) : ClockState = {
+        state.with("done", state.done.put(p_sid, flag))
+    }
+
+    pure def IncrRound(state : ClockState) : ClockState = {
+        state.with("current_round", state.current_round + 1)
+    }
 }
 
 module iw_clock_actions {
@@ -305,6 +365,10 @@ module iw_simulator {
     }
 
     type Actions = Corrupt | RdIncoming | RdOutput
+
+    type SimulatorEffect = UpdateItm(ItmEffect)
+                         | UpdatedOked(P_Sid)
+                         | UpdateCorrupted(P_Sid)
 }
 
 module iw_simulator_actions {
@@ -355,6 +419,8 @@ module iw_environment {
     type EnvironmentState = {
         itm : EnvironmentITM,
     }
+
+    type EnvironmentEffect = | UpdateItm(ItmEffect)
 }
 
 module iw_environment_actions {
@@ -396,7 +462,8 @@ module iw_party {
     type PartyITM = ITM[Input, Output, Incoming]
 
     type PartyState = {
-        itm : PartyITM,
+        current_round : Round,
+        itm           : PartyITM,
     }
 
     type Parties = P_Sid -> PartyState
@@ -409,6 +476,9 @@ module iw_party {
     }
 
     type Actions = ()
+
+    type EnvironmentEffect = UpdateItm(ItmEffect)
+                           | UpdateRound(Round)
 }
 
 module iw_party_actions {
@@ -424,7 +494,7 @@ module iw_party_actions {
     // Action called by Z.
     // It initializes P's state.
     action Init(Parties) = {
-        Parties' = 1.to(NumberOfParties).mapBy(i => ({ itm : ItmInit(utils::P(i)) }))
+        Parties' = 1.to(NumberOfParties).mapBy(i => ({ itm : ItmInit(utils::P(i)), current_round : 0 }))
     }
 
     // Action called by the party when receiving Reg from Z on
