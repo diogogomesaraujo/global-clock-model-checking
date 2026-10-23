@@ -105,8 +105,8 @@ module uc {
         }
     }
 
-    pure def ApplyEffects(itm : s, effects : e) : s = {
-        effects.foldl(itm, (acc, e) => ApplyEffect(itm, e))
+    pure def ApplyEffects(state : s, effects : Effects[e]) : s = {
+        effects.foldl(state, (acc, e) => ApplyEffect(state, e))
     }
 
     pure def ReadNew(tape : List[a], pointer : Pointer) : Option[a] = {
@@ -337,6 +337,7 @@ module iw_simulator {
 
 module iw_simulator_actions {
     import uc.*
+    import effect.*
     
     import iw_simulator as simulator
     import iw_clock     as clock
@@ -352,9 +353,8 @@ module iw_simulator_actions {
         }
     }
 
-    action Round(GClock) = {
-        GClock' = GClock.with( "itm"
-                   , AddIncoming(GClock.itm, clock::SimulatorRoundRequest))
+    pure def Round(GClock : clock::ClockState) : utils::Effects[IwEffect] = {
+        [GClockEffect(clock::UpdateItm(UpdateIncoming(clock::SimulatorRoundRequest)))]
     }
 }
 
@@ -460,6 +460,7 @@ module iw_party {
 
 module iw_party_actions {
     import uc.*
+    import effect.*
     import assumptions.*
 
     import utils
@@ -477,46 +478,34 @@ module iw_party_actions {
     // Action called by the party when receiving Reg from Z on
     // the input-tape.
     // Finally it puts an Reg message in the G-Clock's output-tape.
-    action Register(p_sid, GClock, Z) = {
-        GClock' = GClock.with( "itm"
-                             , AddInput(GClock.itm, clock::Reg({ p_sid : p_sid })))
+    pure def Register(p_sid : utils::P_Sid, GClock : clock::ClockState, Z : environment::EnvironmentState) : utils::Effects[IwEffect] = {
+        [GClockEffect(clock::UpdateItm(UpdateInput(clock::Reg({ p_sid : p_sid }))))]
     }
 
-    action RegisterResponse(p_sid, Z, response) = {
-        Z' = Z.with( "itm"
-                   , AddOutput( Z.itm
-                              , match response {
-                                    | Ok     => environment::RegisterOk({ p_sid : p_sid })
-                                    | Failed => environment::Failed({ p_sid : p_sid })
-                                    | _      => environment::Failed({ p_sid : p_sid })
-                                }))
+    pure def RegisterResponse(p_sid : utils::P_Sid, Z: environment::EnvironmentState, response : party::Output) : utils::Effects[IwEffect] = {
+        [ZEffect(environment::UpdateItm(UpdateOutput(match response {
+                                                        | Ok     => environment::RegisterOk({ p_sid : p_sid })
+                                                        | Failed => environment::Failed({ p_sid : p_sid })
+                                                        | _      => environment::Failed({ p_sid : p_sid }) })))]
     }
 
-    action Round(GClock, p_sid) = {
-        GClock' = GClock.with( "itm"
-                             , AddInput( GClock.itm
-                                        , clock::PartyRoundRequest({ p_sid : p_sid })))
+    pure def Round(p_sid : utils::P_Sid, GClock: clock::ClockState) : utils::Effects[IwEffect] = {
+        [GClockEffect(clock::UpdateItm(UpdateInput(clock::PartyRoundRequest({ p_sid : p_sid }))))]
     }
 
-    action RoundResponse(p_sid, Z, round) = {
-        Z' = Z.with( "itm"
-                   , AddOutput(Z.itm, environment::PartyRound({ p_sid : p_sid
-                                                              , round : round })))
+    action RoundToEnvironment(p_sid, Z, round) = {
+        [ZEffect(environment::UpdateItm(UpdateOutput(environment::PartyRound({ p_sid : p_sid, round : round }))))]
     }
 
     action Ok(GClock, p_sid) = {
-        GClock' = GClock.with( "itm"
-                             , AddInput(GClock.itm, clock::RoundOk({ p_sid : p_sid })))
+        [GClockEffect(clock::UpdateItm(UpdateInput(clock::RoundOk({ p_sid : p_sid }))))]
     }
 
     action OkResponse(p_sid, Z, response) = {
-        Z' = Z.with( "itm"
-                   , AddOutput( Z.itm
-                              , match response {
-                                    | Ok     => environment::RoundOk({ p_sid : p_sid })
-                                    | Failed => environment::Failed({ p_sid : p_sid })
-                                    | _      => environment::Failed({ p_sid : p_sid })
-                                }))
+        [ZEffect(environment::UpdateItm(UpdateOutput(match response {
+                                                        | Ok     => environment::RoundOk({ p_sid : p_sid })
+                                                        | Failed => environment::Failed({ p_sid : p_sid })
+                                                        | _      => environment::Failed({ p_sid : p_sid })})))]
     }
 }
 
