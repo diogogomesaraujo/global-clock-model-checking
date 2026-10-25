@@ -5,8 +5,8 @@
 
 // Possible executions: 
 // - a real-world model where honest parties can leave the protocol
-// - a real-world model that can't guarantee that parties register at exactly
-// the same time instance (execution may lag behind in some).
+// - a real-world model that can't guarantee that all honest parties register 
+// before starting the protocol
 // - a real-world model with bounded-drift clocks (such as NTP)
 // - one where messages are delivered asynchronously and can have delay.
 
@@ -261,7 +261,7 @@ module iw_clock_actions {
     pure def Transition(which, GClock, Z, S, Parties) = {
         match which {
             | RdInput    => {
-                match ReadNew(GClock.itm.input, GClock.itm.input_pointer) {
+                match ReadNewInput(GClock.itm) {
                     | Some(input_message) => {
                         (match (input_message) {
                             | Reg(r)               => Register(GClock, r.p_sid)
@@ -274,7 +274,7 @@ module iw_clock_actions {
                 }
             }
             | RdIncoming => { 
-                match ReadNew(GClock.itm.incoming_messages, GClock.itm.incoming_pointer) {
+                match ReadNewIncoming(GClock.itm) {
                     | Some(incoming_message) => {
                         (match incoming_message {
                             | SimulatorRoundRequest(r) =>
@@ -366,7 +366,7 @@ module iw_simulator_actions {
         match which {
             | Corrupt(r)   => Corrupt(r.p_sid)
             | RoundRequest => Round
-            | RdIncoming   => match ReadNew(S.itm.incoming_messages, S.itm.incoming_pointer) {
+            | RdIncoming   => match ReadNewIncoming(S.itm) {
                                 | Some(incoming_message) => {
                                     (match incoming_message {
                                         | RoundResponse(r) => RoundResponse(r.p_sid)
@@ -413,11 +413,16 @@ module iw_environment {
             | ZUpdateItm(e) => state.with("itm", uc::ApplyEffect(state.itm, e))
         }
     }
+
+    type Action = SetOk(P_Sid) | GetRound(P_Sid) | Register(P_Sid)
 }
 
 module iw_environment_actions {
     import utils
+
     import uc.*
+    import effect.*
+    import assumptions.*
 
     import iw_party       as party
     import iw_simulator   as simulator
@@ -426,6 +431,33 @@ module iw_environment_actions {
     // Action called by the model checker.
     // It initializes Z's state.
     pure def Init() = { itm : ItmInit(utils::Z) }
+
+    pure def Round(p_sid, Parties) = {
+        [PEffect(party::PUpdateItm({ p_sid: p_sid, effect : UpdateInput(party::RoundRequest) }))]
+    }
+
+    pure def Ok(p_sid, Parties) = {
+        [PEffect(party::PUpdateItm({ p_sid: p_sid, effect : UpdateInput(party::RoundOk) }))]
+    }
+
+    pure def Reg(p_sid, Parties) = {
+         [PEffect(party::PUpdateItm({ p_sid: p_sid, effect : UpdateInput(party::Reg) }))]
+    }
+
+    pure def AllRegistered(Z) = {
+        length(Z.itm.output.select(out => match out {
+            | RegisterOk(_) => true
+            | _             => false
+        })) == NumberOfParties
+    }
+
+    pure def Transition(which, Parties) = {
+        match which {
+            | SetOk(p_sid)    => Ok(p_sid, Parties)
+            | GetRound(p_sid) => Round(p_sid, Parties)
+            | Register(p_sid) => Reg(p_sid, Parties)
+        }
+    }
 }
 
 // -----------------------------------------------------------------
@@ -498,7 +530,7 @@ module iw_party_actions {
         [GClockEffect(clock::ClockUpdateItm(UpdateInput(clock::Reg({ p_sid : p_sid }))))]
     }
 
-    pure def RegisterResponse(p_sid, Z, response) = {
+    pure def RegisterToZ(p_sid, Z, response) = {
         [ZEffect(environment::ZUpdateItm(UpdateOutput(match response {
                                                         | Ok     => environment::RegisterOk({ p_sid : p_sid })
                                                         | Failed => environment::Failed({ p_sid : p_sid })
@@ -509,7 +541,7 @@ module iw_party_actions {
         [GClockEffect(clock::ClockUpdateItm(UpdateInput(clock::PartyRoundRequest({ p_sid : p_sid }))))]
     }
 
-    pure def RoundToEnvironment(p_sid , Z, round) = {
+    pure def RoundToZ(p_sid , Z, round) = {
         [ZEffect(environment::ZUpdateItm(UpdateOutput(environment::PartyRound({ p_sid : p_sid, round : round }))))]
     }
 
@@ -517,11 +549,41 @@ module iw_party_actions {
         [GClockEffect(clock::ClockUpdateItm(UpdateInput(clock::RoundOk({ p_sid : p_sid }))))]
     }
 
-    pure def OkResponse(p_sid, Z, response) = {
+    pure def MaybeOkToZ(p_sid, Z, response) = {
         [ZEffect(environment::ZUpdateItm(UpdateOutput(match response {
                                                         | Ok     => environment::RoundOk({ p_sid : p_sid })
                                                         | Failed => environment::Failed({ p_sid : p_sid })
                                                         | _      => environment::Failed({ p_sid : p_sid })})))]
+    }
+
+    pure def Transition(which, p_sid, GClock, Z) = {
+        match which {
+            | RdInput    => {
+                match ReadNewInput(GClock.itm) {
+                    | Some(input_message) => {
+                        (match (input_message) {
+                            | Reg             => Register(p_sid, GClock, Z)
+                            | RoundRequest(r) => Round(r.p_sid, GClock)
+                            | RoundOk(r)      => Ok(GClock, r.p_sid)
+                            | _ => []
+                        }).append(GClockEffect(clock::ClockUpdateItm(IncrementInputPointer)))
+                    }
+                    | None => []
+                }
+            }
+            | RdOutput => { 
+                match ReadNewOutput(GClock.itm) {
+                    | Some(output_message) => {
+                        (match output_message {
+                            | RoundResponse(r) => RoundToZ(p_sid, Z, r.round)
+                            | Failed           => MaybeOkToZ(p_sid, Z, party::Failed)
+                            | Ok               => MaybeOkToZ(p_sid, Z, party::Ok)
+                        }).append(GClockEffect(clock::ClockUpdateItm(IncrementOutputPointer)))
+                    }
+                    | None => []
+                }
+            }
+        }
     }
 }
 
@@ -531,6 +593,8 @@ module iw_party_actions {
 // ^^^^^^^^^^^^^^^^
 
 module iw {    
+    import effect.*
+
     import uc as uc
 
     import utils as utils
