@@ -1,5 +1,5 @@
 <div align="center">
-  <h3 align="center">model-checking-global-clocks</h3>
+  <h3 align="center">global-clock-model-checking</h3>
   <p align="center">
     Model Checking the UC-realization of the Global Clock Ideal Functionality in Quint
   </p>
@@ -12,5 +12,6 @@ This project is being developed as part of my MsC thesis in Computer Science at 
 
 ## References
 - UC rules: https://swayam-padhy.gitbook.io/
-- GClock:   https://eprint.iacr.org/2026/292.pdf and https://eprint.iacr.org/2011/310.pdf
-- Quint:    https://quint.sh/quint-cheatsheet.pdf
+- GClock: https://eprint.iacr.org/2026/292.pdf
+- UC Synchrony: https://eprint.iacr.org/2011/310.pdf
+- Quint: https://quint.sh/quint-cheatsheet.pdf
