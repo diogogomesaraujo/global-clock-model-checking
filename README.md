@@ -12,5 +12,6 @@ This project is being developed as part of my MsC thesis in Computer Science at 
 
 ## References
 - UC rules: https://swayam-padhy.gitbook.io/
-- GClock:   https://eprint.iacr.org/2026/292.pdf and https://eprint.iacr.org/2011/310.pdf
-- Quint:    https://quint.sh/quint-cheatsheet.pdf
+- GClock: https://eprint.iacr.org/2026/292.pdf
+- UC Synchrony: https://eprint.iacr.org/2011/310.pdf
+- Quint: https://quint.sh/quint-cheatsheet.pdf
