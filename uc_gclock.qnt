@@ -300,7 +300,7 @@ module iw_simulator {
         current_round     : Round
     }
 
-    type Action = Corrupt(P_Sid) | RoundRequest | RdIncoming | Idle
+    type Action = Corrupt(P_Sid) | RoundRequest | RdIncoming
 
     type SimulatorEffect = SUpdateItm(uc::ItmEffect[Input, Output, Incoming])
                          | UpdatedOked(P_Sid)
@@ -360,7 +360,6 @@ module iw_simulator_actions {
                                     }
                                 | None => []
                 }
-            | Idle         => []
         }
     }
 }
@@ -643,9 +642,8 @@ module iw {
             // Simulator
             nondet p_sid_s = oneOf(1.to(NumberOfParties))
             nondet which_s = oneOf(Set( simulator::Corrupt(p_sid_s)
-                                    , simulator::RoundRequest
-                                    , simulator::RdIncoming
-                                    , simulator::Idle ))
+                                      , simulator::RoundRequest
+                                      , simulator::RdIncoming))
 
             // GClock
             nondet which_g = oneOf(Set( clock::RdInput
@@ -734,6 +732,9 @@ module iw {
 module rw {    
     import utils.*
 }
+
+// Main
+// ^^^^
 
 module uc_gclock {
     import iw
