@@ -1,0 +1,9 @@
+Model Checking a real-world clock constructions against the ideal functionality GClock following the UC framework.
+
+Prove there exists π, A, Z s.t. forall S : EXEC_{π,A,Z} ≉ EXEC_{GClock,S,Z}
+
+Possible counter-example executions: 
+- a real-world model where honest parties can leave the protocol
+- a real-world model that can't guarantee that all honest parties register before starting the protocol
+- a real-world model with bounded-drift clocks (such as NTP)
+- one where messages are delivered asynchronously and can have delay.
