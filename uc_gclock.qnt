@@ -11,7 +11,7 @@ module assumptions {
 
     pure val CorruptedBound  = 1
 
-    pure val MaxRound        = 2
+    pure val MaxRound        = 5
 
     pure val TapeCap         = 1
 }
