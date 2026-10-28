@@ -11,9 +11,8 @@ module assumptions {
 
     pure val CorruptedBound  = 1
 
-    pure val MaxRound        = 10
+    pure val MaxRound        = 2
 
-    // Max number of unread messages on any single tape.
     pure val TapeCap         = 1
 }
 
@@ -54,7 +53,6 @@ module uc {
     import utils.*
     import assumptions.*
 
-    // Each tape is a FIFO queue. The head is the next message to be read.
     type ITM[in, out, in_msg] = {
         sid                : Sid_t,
         input              : List[in],
@@ -62,7 +60,6 @@ module uc {
         incoming_messages  : List[in_msg],
     }
 
-    // Update* appends to the tail of a tape, Pop* removes the head.
     type ItmEffect[in, out, in_msg] = ItmEffectUpdateInput(in)
                                     | ItmEffectUpdateOutput(out)
                                     | ItmEffectUpdateIncoming(in_msg)
@@ -92,7 +89,6 @@ module uc {
         }
     }
 
-    // Peek at the head of a tape without consuming it.
     pure def ReadNew(tape : List[a]) : Option_t[a] = {
         if (length(tape) == 0) None
         else Some(tape.head())
@@ -176,7 +172,6 @@ module iw {
         }
     }
 
-    // Every tape of every machine is within TapeCap.
     pure def WorldFits(w : World) : bool = {
         and {
             ItmFits(w.s.itm),
@@ -185,7 +180,6 @@ module iw {
         }
     }
 
-    // No message is pending anywhere: control is back with Z.
     pure def Quiescent(s : SimulatorState, g : ClockState, p : PartiesState) : bool = {
         and {
             ItmIsEmpty(s.itm),
@@ -206,7 +200,7 @@ module iw {
     type ClockOutput = ()
 
     type ClockIncoming = ClockIncomingRound             // in the paper Sim.Round() but adapted to the real world model
-                       | ClockIncomingCorrupt (P_Sid_t) // note: modelling corruptions like Universally Composable Synchronous Computation instead
+                       | ClockIncomingCorrupt (P_Sid_t) // modelling corruptions like Universally Composable Synchronous Computation instead
 
     type ClockITM = ITM[ClockInput, ClockOutput, ClockIncoming]
 
@@ -236,8 +230,6 @@ module iw {
         }
     }
 
-    // Action called by Z.
-    // It initializes the G-Clock's state.
     pure def ClockInit : ClockState = {
         itm                : ItmInit(GClock_Sid),
         current_round      : FirstRound,
@@ -246,11 +238,6 @@ module iw {
         done               : Map()
     }
 
-    // Action called by the clock when receiving a Reg request from P on the
-    // input tape.
-    // It registers the party with sid P_Sid and, if it was not previously
-    // registered it sets done[P_Sid] to 0.
-    // Finally it puts an Ok message in P's output-tape.
     pure def ClockRegister(clock : ClockState, p_sid : P_Sid_t) : Effects_t[IwEffect] = {
         val effects = [GClockIwEffect(ClockEffectUpdateRegistered(p_sid))]
         if (clock.registered_parties.contains(p_sid)) {
@@ -264,16 +251,10 @@ module iw {
         }
     }
 
-    // Action called by the clock when receiving a PartyRoundRequest request
-    // from P on the input tape.
-    // Finally it puts a RoundResponse message in P's output-tape.
     pure def ClockPartyRound(clock : ClockState, p_sid: P_Sid_t) : Effects_t[IwEffect] = {
         [PartiesIwEffect(PartiesEffectUpdateItm({ p_sid : p_sid, effect : ItmEffectUpdateOutput(PartiesOutputRound(clock.current_round)) }))]
     }
 
-    // Action called by the clock when receiving a Sim.Round() request
-    // from S on the incoming messages tape.
-    // Finally it puts a RoundResponse message in S's incoming messages tape.
     pure def ClockSimulatorRound(clock : ClockState) : Effects_t[IwEffect] = {
         [SimulatorIwEffect(SimulatorEffectUpdateItm(ItmEffectUpdateIncoming(SimulatorIncomingRound(clock.current_round))))]
     }
@@ -283,7 +264,7 @@ module iw {
             [PartiesIwEffect(PartiesEffectUpdateItm({ p_sid : p_sid, effect : ItmEffectUpdateOutput(PartiesOutputFailed) }))]
         } else {
             if (not((clock.registered_parties.exclude(clock.corrupted_parties))
-                        .exists(sid => clock.done.put(p_sid, One).get(sid) == Zero))) // because P stil has his flag set to O
+                        .exists(sid => clock.done.put(p_sid, One).get(sid) == Zero)))
                 clock.done.keys().exclude(clock.corrupted_parties).fold([], (acc, k) =>
                         acc.append(GClockIwEffect(ClockEffectUpdateDone({ p_sid : k, flag : Zero }))))
                     .append(GClockIwEffect(ClockEffectIncrementRound))
@@ -363,11 +344,9 @@ module iw {
         }
     }
 
-    // Action called by Z.
-    // It initializes S's state.
     pure def SimulatorInit : SimulatorState = {
-        itm               : ItmInit(S_Sid), // for now here because we don't need to consider the machine before activation
-        parties_that_oked : Set(),             // oked the current round
+        itm               : ItmInit(S_Sid),
+        parties_that_oked : Set(),          
         corrupted_parties : Set(),
         current_round     : FirstRound
     }
@@ -393,12 +372,11 @@ module iw {
         size(s.corrupted_parties)
     }
 
-    // Corrupt and RoundRequest are instructions from Z, so they are only
-    // enabled while control is with Z (`quiet`). Reading the incoming tape is
-    // a reaction to a message and is always enabled.
     pure def SimulatorTransition(which : SimulatorAction, s : SimulatorState, quiet : bool) : Effects_t[IwEffect] = {
         match which {
-            | SimulatorActionCorrupt(p_sid) => if (quiet) SimulatorCorrupt(p_sid) else []
+            | SimulatorActionCorrupt(p_sid) => if (quiet) 
+                                               if (size(s.corrupted_parties) < CorruptedBound) SimulatorCorrupt(p_sid) 
+                                               else [] else []
             | SimulatorActionRoundRequest   => if (quiet) SimulatorRound else []
             | SimulatorActionRdIncoming     => match ReadNewIncoming(s.itm) {
                                                     | Some(incoming_message) => {
@@ -416,9 +394,6 @@ module iw {
 
     // Environment
     // ^^^^^^^^^^^
-    //
-    // Z reads everything written to its output tape immediately, so there is
-    // no tape to grow: Z only keeps a bounded summary of what it observed.
 
     type EnvironmentOutput = EnvironmentOutputCorrupted(P_Sid_t)
                            | EnvironmentOutputRegisterOk(P_Sid_t)                         // in the paper ok
@@ -427,8 +402,8 @@ module iw {
                            | EnvironmentOutputFailed(P_Sid_t)                             // in the paper ⊥
 
     type EnvironmentState = {
-        registered : Set[P_Sid_t],         // parties for which Z saw RegisterOk
-        seen_round : P_Sid_t -> Round_t,   // rounds Z saw since it last sent an Ok
+        registered : Set[P_Sid_t],        
+        seen_round : P_Sid_t -> Round_t, 
     }
 
     type EnvironmentEffect = EnvironmentEffectObserve(EnvironmentOutput)
@@ -450,15 +425,12 @@ module iw {
         }
     }
 
-    // Action called by the model checker.
-    // It initializes Z's state.
     pure def EnvironmentInit : EnvironmentState = { registered : Set(), seen_round : Map() }
 
     pure def EnvironmentRound(p_sid : P_Sid_t) : Effects_t[IwEffect] = {
         [PartiesIwEffect(PartiesEffectUpdateItm({ p_sid: p_sid, effect : ItmEffectUpdateInput(PartiesInputRound) }))]
     }
 
-    // An Ok starts a new "no Ok in between" window for TimeAgreement.
     pure def EnvironmentOk(p_sid : P_Sid_t) : Effects_t[IwEffect] = {
         [ PartiesIwEffect(PartiesEffectUpdateItm({ p_sid: p_sid, effect : ItmEffectUpdateInput(PartiesInputOk) }))
         , EnvironmentIwEffect(EnvironmentEffectClearRounds) ]
@@ -472,8 +444,6 @@ module iw {
         size(z.registered) >= NumberOfParties
     }
 
-    // Z gives a new input only when control is back with it (`quiet`).
-    // Registration comes first; Ok and Round only after everyone registered.
     pure def EnvironmentTransition(which : EnvironmentAction, z : EnvironmentState, quiet : bool) : Effects_t[IwEffect] = {
         if (not(quiet)) []
         else match which {
@@ -598,9 +568,6 @@ module iw {
         overflow' = false
     }
 
-    // One machine takes one step. An empty effect list is a stutter step.
-    // Z and S's own initiatives only fire when nothing is pending (UC's
-    // run-to-completion); reactions to pending messages are always enabled.
     action IwStep = {
         val quiet = Quiescent(S, GClock, Parties)
         nondet who = oneOf(Set(Z_Sid, S_Sid, GClock_Sid, P_Sid(InvalidP_Sid)))
@@ -645,8 +612,6 @@ module iw {
         }
     }
 
-    // Applies all effects atomically. If the result would put more than
-    // TapeCap messages on some tape, nothing is applied and `overflow` is set.
     action Update(effects : Effects_t[IwEffect]) : bool = {
         val w = effects.foldl({ z : Z, s : S, g : GClock, p : Parties }, (acc, e) => IwApplyEffect(acc, e))
 
@@ -673,25 +638,33 @@ module iw {
     // MUST FAIL
     // ^^^^^^^^^
 
-    val RoundLimit =
+    val RoundPastBound =
         GClock.current_round < MaxRound
 
     // MUST PASS
     // ^^^^^^^^^
 
-    // The tape bound TapeCap never restricts behavior.
-    val NoOverflow = not(overflow)
+    // For correctness
+    val NoOverflow    = not(overflow)
+    val RoundBounded  = GClock.current_round <= MaxRound
 
-    // The clock saturates at MaxRound.
-    val RoundBounded = GClock.current_round <= MaxRound
-
-    // Time Agreement: If two parties query the time and no OK requests have been sent in the middle then G-clock responds with the same time.
+    // Property 1: Time Agreement: If two parties query the time and no OK requests have been sent in the middle then G-clock responds with the same time.
     val TimeAgreement =
         Z.seen_round.keys().forall(p1 =>
             Z.seen_round.keys().forall(p2 =>
                 Z.seen_round.get(p1) == Z.seen_round.get(p2)
             )
         )
+
+    // Property 2: TimeLiveness: If all honest registered parties are ready, then time advances. this is non-trivial since we have to track who was registered and corrupted at all times
+    // val TimeLiveness = 
+        
+
+    val AllProps = and {
+        NoOverflow,
+        RoundBounded,
+        TimeAgreement
+    }
 }
 
 // -----------------------------------------------------------------
