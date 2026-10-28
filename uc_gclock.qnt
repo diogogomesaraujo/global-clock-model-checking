@@ -7,7 +7,14 @@
 // ^^^^^
 
 module assumptions {
-    pure val NumberOfParties = 2
+    pure val NumberOfParties = 3
+
+    pure val CorruptedBound  = 1
+
+    pure val MaxRound        = 10
+
+    // Max number of unread messages on any single tape.
+    pure val TapeCap         = 1
 }
 
 module utils {
@@ -16,7 +23,7 @@ module utils {
     pure def FirstRound : int = 0
 
     // ^^^^^
-    
+
     type P_Sid_t = int
 
     type Sid_t = S_Sid | Z_Sid | P_Sid(P_Sid_t) | GClock_Sid
@@ -33,12 +40,6 @@ module utils {
 
     // ^^^^^
 
-    type Pointer_t = int // points to the element it will evaluate (not the one it has already evaluated) 
-
-    pure def NotPointing : Pointer_t = 0
-
-    // ^^^^^
-
     type Option_t[a] = Some(a) | None
 
     // ^^^^^
@@ -51,65 +52,78 @@ module utils {
 
 module uc {
     import utils.*
+    import assumptions.*
 
+    // Each tape is a FIFO queue. The head is the next message to be read.
     type ITM[in, out, in_msg] = {
         sid                : Sid_t,
         input              : List[in],
         output             : List[out],
         incoming_messages  : List[in_msg],
-        input_pointer      : Pointer_t,
-        output_pointer     : Pointer_t,
-        incoming_pointer   : Pointer_t,
     }
 
+    // Update* appends to the tail of a tape, Pop* removes the head.
     type ItmEffect[in, out, in_msg] = ItmEffectUpdateInput(in)
                                     | ItmEffectUpdateOutput(out)
                                     | ItmEffectUpdateIncoming(in_msg)
-                                    | ItmEffectIncrementInputPointer
-                                    | ItmEffectIncrementOutputPointer
-                                    | ItmEffectIncrementIncomingPointer
+                                    | ItmEffectPopInput
+                                    | ItmEffectPopOutput
+                                    | ItmEffectPopIncoming
 
     pure def ItmInit(sid: Sid_t) : ITM[in, out, incoming] = {
         sid               : sid,
         input             : [],
         output            : [],
         incoming_messages : [],
-        input_pointer     : NotPointing,
-        output_pointer    : NotPointing,
-        incoming_pointer  : NotPointing,
     }
 
-    pure def ItmApplyEffect(itm : ITM[in, out, incoming], effect : ItmEffect) : ITM[in, out, incoming] = {
+    pure def PopTape(tape : List[a]) : List[a] = {
+        if (length(tape) == 0) tape else tape.tail()
+    }
+
+    pure def ItmApplyEffect(itm : ITM[in, out, incoming], effect : ItmEffect[in, out, incoming]) : ITM[in, out, incoming] = {
         match (effect) {
-            | ItmEffectUpdateInput(msg)         => itm.with("input", itm.input.append(msg))
-            | ItmEffectUpdateOutput(msg)        => itm.with("output", itm.output.append(msg))
-            | ItmEffectUpdateIncoming(msg)      => itm.with("incoming_messages", itm.incoming_messages.append(msg))
-            | ItmEffectIncrementInputPointer    => itm.with("input_pointer", itm.input_pointer + 1)
-            | ItmEffectIncrementOutputPointer   => itm.with("output_pointer", itm.output_pointer + 1)
-            | ItmEffectIncrementIncomingPointer => itm.with("incoming_pointer", itm.incoming_pointer + 1)
+            | ItmEffectUpdateInput(msg)    => itm.with("input", itm.input.append(msg))
+            | ItmEffectUpdateOutput(msg)   => itm.with("output", itm.output.append(msg))
+            | ItmEffectUpdateIncoming(msg) => itm.with("incoming_messages", itm.incoming_messages.append(msg))
+            | ItmEffectPopInput            => itm.with("input", PopTape(itm.input))
+            | ItmEffectPopOutput           => itm.with("output", PopTape(itm.output))
+            | ItmEffectPopIncoming         => itm.with("incoming_messages", PopTape(itm.incoming_messages))
         }
     }
 
-    pure def ItmApplyEffects(state : ITM[in, out, incoming], effects : Effects_t[ItmEffect]) : ITM[in, out, incoming] = {
-        effects.foldl(state, (acc, e) => ItmApplyEffect(acc, e))
-    }
-
-    pure def ReadNew(tape, pointer) = {
-        if (length(tape)      == 0) None
-        else if (length(tape) <= pointer) None
-        else Some(tape[pointer])
+    // Peek at the head of a tape without consuming it.
+    pure def ReadNew(tape : List[a]) : Option_t[a] = {
+        if (length(tape) == 0) None
+        else Some(tape.head())
     }
 
     pure def ReadNewInput(itm) = {
-        ReadNew(itm.input, itm.input_pointer)
+        ReadNew(itm.input)
     }
 
     pure def ReadNewOutput(itm) = {
-        ReadNew(itm.output, itm.output_pointer)
+        ReadNew(itm.output)
     }
 
     pure def ReadNewIncoming(itm) = {
-        ReadNew(itm.incoming_messages, itm.incoming_pointer)
+        ReadNew(itm.incoming_messages)
+    }
+
+    pure def ItmIsEmpty(itm : ITM[in, out, incoming]) : bool = {
+        and {
+            length(itm.input) == 0,
+            length(itm.output) == 0,
+            length(itm.incoming_messages) == 0,
+        }
+    }
+
+    pure def ItmFits(itm : ITM[in, out, incoming]) : bool = {
+        and {
+            length(itm.input) <= TapeCap,
+            length(itm.output) <= TapeCap,
+            length(itm.incoming_messages) <= TapeCap,
+        }
     }
 }
 
@@ -118,7 +132,7 @@ module uc {
 // Ideal-world Model
 // ^^^^^^^^^^^^^^^^
 
-module iw {    
+module iw {
     import uc.*
     import utils.*
     import assumptions.*
@@ -128,10 +142,13 @@ module iw {
     // Globals
     // ^^^^^^^
 
-    var Z       : EnvironmentState
-    var S       : SimulatorState
-    var GClock  : ClockState
-    var Parties : PartiesState
+    var Z        : EnvironmentState
+    var S        : SimulatorState
+    var GClock   : ClockState
+    var Parties  : PartiesState
+
+    // Set when a step needed more than TapeCap slots on some tape.
+    var overflow : bool
 
     // -----------------------------------------------------------------
 
@@ -142,6 +159,40 @@ module iw {
                   | EnvironmentIwEffect(EnvironmentEffect)
                   | SimulatorIwEffect(SimulatorEffect)
                   | PartiesIwEffect(PartiesEffect)
+
+    type World = {
+        z : EnvironmentState,
+        s : SimulatorState,
+        g : ClockState,
+        p : PartiesState,
+    }
+
+    pure def IwApplyEffect(w : World, e : IwEffect) : World = {
+        match e {
+            | EnvironmentIwEffect(x) => w.with("z", EnvironmentApplyEffect(w.z, x))
+            | SimulatorIwEffect(x)   => w.with("s", SimulatorApplyEffect(w.s, x))
+            | GClockIwEffect(x)      => w.with("g", ClockApplyEffect(w.g, x))
+            | PartiesIwEffect(x)     => w.with("p", PartiesApplyEffect(w.p, x))
+        }
+    }
+
+    // Every tape of every machine is within TapeCap.
+    pure def WorldFits(w : World) : bool = {
+        and {
+            ItmFits(w.s.itm),
+            ItmFits(w.g.itm),
+            w.p.keys().forall(k => ItmFits(w.p.get(k).itm)),
+        }
+    }
+
+    // No message is pending anywhere: control is back with Z.
+    pure def Quiescent(s : SimulatorState, g : ClockState, p : PartiesState) : bool = {
+        and {
+            ItmIsEmpty(s.itm),
+            ItmIsEmpty(g.itm),
+            p.keys().forall(k => ItmIsEmpty(p.get(k).itm)),
+        }
+    }
 
     // -----------------------------------------------------------------
 
@@ -154,20 +205,20 @@ module iw {
 
     type ClockOutput = ()
 
-    type ClockIncoming = ClockIncomingRound                         // in the paper Sim.Round() but adapted to the real world model
+    type ClockIncoming = ClockIncomingRound             // in the paper Sim.Round() but adapted to the real world model
                        | ClockIncomingCorrupt (P_Sid_t) // note: modelling corruptions like Universally Composable Synchronous Computation instead
 
     type ClockITM = ITM[ClockInput, ClockOutput, ClockIncoming]
 
     type ClockState = {
         itm                : ClockITM,
-        current_round      : Round_t,        // in the paper r
-        registered_parties : Set[P_Sid_t],   // in the paper Reg
-        corrupted_parties  : Set[P_Sid_t],   // in the paper C
+        current_round      : Round_t,          // in the paper r
+        registered_parties : Set[P_Sid_t],     // in the paper Reg
+        corrupted_parties  : Set[P_Sid_t],     // in the paper C
         done               : P_Sid_t -> Flag_t // in the paper Done
     }
 
-    type ClockAction = ClockActionRdInput | ClockActionRdIncoming 
+    type ClockAction = ClockActionRdInput | ClockActionRdIncoming
 
     type ClockEffect = ClockEffectUpdateItm(ItmEffect[ClockInput, ClockOutput, ClockIncoming])
                      | ClockEffectIncrementRound
@@ -181,12 +232,8 @@ module iw {
             | ClockEffectUpdateRegistered(p_sid) => state.with("registered_parties", state.registered_parties.union(Set(p_sid)))
             | ClockEffectUpdateCorrupted(p_sid)  => state.with("corrupted_parties", state.corrupted_parties.union(Set(p_sid)))
             | ClockEffectUpdateDone(d)           => state.with("done", state.done.put(d.p_sid, d.flag))
-            | ClockEffectIncrementRound          => state.with("current_round", state.current_round + 1)
+            | ClockEffectIncrementRound          => state.with("current_round", if (state.current_round < MaxRound) state.current_round + 1 else MaxRound) // saturates at MaxRound so the state space is finite
         }
-    }
-
-    pure def ClockApplyEffects(state : ClockState, effects : Effects_t[ClockEffect]) : ClockState = {
-        effects.foldl(state, (acc, e) => ClockApplyEffect(acc, e))
     }
 
     // Action called by Z.
@@ -199,14 +246,14 @@ module iw {
         done               : Map()
     }
 
-    // Action called by the clock when receiving a Reg request from P on the 
+    // Action called by the clock when receiving a Reg request from P on the
     // input tape.
     // It registers the party with sid P_Sid and, if it was not previously
     // registered it sets done[P_Sid] to 0.
     // Finally it puts an Ok message in P's output-tape.
-    pure def ClockRegister(GClock : ClockState, p_sid : P_Sid_t) : Effects_t[IwEffect] = {
+    pure def ClockRegister(clock : ClockState, p_sid : P_Sid_t) : Effects_t[IwEffect] = {
         val effects = [GClockIwEffect(ClockEffectUpdateRegistered(p_sid))]
-        if (GClock.registered_parties.contains(p_sid)) {
+        if (clock.registered_parties.contains(p_sid)) {
             effects
                 .append(PartiesIwEffect(PartiesEffectUpdateItm({p_sid : p_sid, effect : ItmEffectUpdateOutput(PartiesOutputRegisterOk)})))
         }
@@ -217,27 +264,27 @@ module iw {
         }
     }
 
-    // Action called by the clock when receiving a PartyRoundRequest request 
+    // Action called by the clock when receiving a PartyRoundRequest request
     // from P on the input tape.
     // Finally it puts a RoundResponse message in P's output-tape.
-    pure def ClockPartyRound(GClock : ClockState, p_sid: P_Sid_t) : Effects_t[IwEffect] = {
-        [PartiesIwEffect(PartiesEffectUpdateItm({ p_sid : p_sid, effect : ItmEffectUpdateOutput(PartiesOutputRound(GClock.current_round)) }))]
+    pure def ClockPartyRound(clock : ClockState, p_sid: P_Sid_t) : Effects_t[IwEffect] = {
+        [PartiesIwEffect(PartiesEffectUpdateItm({ p_sid : p_sid, effect : ItmEffectUpdateOutput(PartiesOutputRound(clock.current_round)) }))]
     }
 
-    // Action called by the clock when receiving a Sim.Round() request 
+    // Action called by the clock when receiving a Sim.Round() request
     // from S on the incoming messages tape.
     // Finally it puts a RoundResponse message in S's incoming messages tape.
-    pure def ClockSimulatorRound(GClock : ClockState) : Effects_t[IwEffect] = {
-        [SimulatorIwEffect(SimulatorEffectUpdateItm(ItmEffectUpdateIncoming(SimulatorIncomingRound(GClock.current_round))))]
+    pure def ClockSimulatorRound(clock : ClockState) : Effects_t[IwEffect] = {
+        [SimulatorIwEffect(SimulatorEffectUpdateItm(ItmEffectUpdateIncoming(SimulatorIncomingRound(clock.current_round))))]
     }
 
-    pure def ClockOk(GClock : ClockState, p_sid : P_Sid_t) : Effects_t[IwEffect] = {
-        if (not(GClock.registered_parties.contains(p_sid))) {
+    pure def ClockOk(clock : ClockState, p_sid : P_Sid_t) : Effects_t[IwEffect] = {
+        if (not(clock.registered_parties.contains(p_sid))) {
             [PartiesIwEffect(PartiesEffectUpdateItm({ p_sid : p_sid, effect : ItmEffectUpdateOutput(PartiesOutputFailed) }))]
-        } else { 
-            if (not((GClock.registered_parties.exclude(GClock.corrupted_parties))
-                        .exists(sid => GClock.done.put(p_sid, One).get(sid) == Zero))) // because P stil has his flag set to O
-                GClock.done.keys().exclude(GClock.corrupted_parties).fold([], (acc, k) => 
+        } else {
+            if (not((clock.registered_parties.exclude(clock.corrupted_parties))
+                        .exists(sid => clock.done.put(p_sid, One).get(sid) == Zero))) // because P stil has his flag set to O
+                clock.done.keys().exclude(clock.corrupted_parties).fold([], (acc, k) =>
                         acc.append(GClockIwEffect(ClockEffectUpdateDone({ p_sid : k, flag : Zero }))))
                     .append(GClockIwEffect(ClockEffectIncrementRound))
             else [ GClockIwEffect(ClockEffectUpdateDone({ p_sid : p_sid, flag : One }))
@@ -246,32 +293,31 @@ module iw {
         }
     }
 
-    pure def ClockCorrupt(GClock: ClockState, p_sid : P_Sid_t) : Effects_t[IwEffect] = {
+    pure def ClockCorrupt(p_sid : P_Sid_t) : Effects_t[IwEffect] = {
         [GClockIwEffect(ClockEffectUpdateCorrupted(p_sid))]
     }
 
-    pure def ClockTransition(which : ClockAction, GClock : ClockState, Z : EnvironmentState, S : SimulatorState, Parties : PartiesState) : Effects_t[IwEffect] = {
+    pure def ClockTransition(which : ClockAction, clock : ClockState) : Effects_t[IwEffect] = {
         match which {
             | ClockActionRdInput    => {
-                match ReadNewInput(GClock.itm) {
+                match ReadNewInput(clock.itm) {
                     | Some(input_message) => {
                         (match (input_message) {
-                            | ClockInputReg(p_sid)   => ClockRegister(GClock, p_sid)
-                            | ClockInputRound(p_sid) => ClockPartyRound(GClock, p_sid)
-                            | ClockInputOk(p_sid)    => ClockOk(GClock, p_sid)
-                            | _ => []
-                        }).append(GClockIwEffect(ClockEffectUpdateItm(ItmEffectIncrementInputPointer)))
+                            | ClockInputReg(p_sid)   => ClockRegister(clock, p_sid)
+                            | ClockInputRound(p_sid) => ClockPartyRound(clock, p_sid)
+                            | ClockInputOk(p_sid)    => ClockOk(clock, p_sid)
+                        }).append(GClockIwEffect(ClockEffectUpdateItm(ItmEffectPopInput)))
                     }
                     | None => []
                 }
             }
-            | ClockActionRdIncoming => { 
-                match ReadNewIncoming(GClock.itm) {
+            | ClockActionRdIncoming => {
+                match ReadNewIncoming(clock.itm) {
                     | Some(incoming_message) => {
                         (match incoming_message {
-                            | ClockIncomingRound      => ClockSimulatorRound(GClock)
-                            | ClockIncomingCorrupt(p_sid) => ClockCorrupt(GClock, p_sid)
-                        }).append(GClockIwEffect(ClockEffectUpdateItm(ItmEffectIncrementIncomingPointer)))
+                            | ClockIncomingRound          => ClockSimulatorRound(clock)
+                            | ClockIncomingCorrupt(p_sid) => ClockCorrupt(p_sid)
+                        }).append(GClockIwEffect(ClockEffectUpdateItm(ItmEffectPopIncoming)))
                     }
                     | None => []
                 }
@@ -294,7 +340,7 @@ module iw {
 
     type SimulatorITM = ITM[SimulatorInput, SimulatorOutput, SimulatorIncoming]
 
-    type SimulatorState = { 
+    type SimulatorState = {
         itm               : SimulatorITM,
         parties_that_oked : Set[P_Sid_t],
         corrupted_parties : Set[P_Sid_t],
@@ -317,10 +363,6 @@ module iw {
         }
     }
 
-    pure def SimulatorApplyEffects(state : SimulatorState, effects : Effects_t[SimulatorEffect]) : SimulatorState = {
-        effects.foldl(state, (acc, e) => SimulatorApplyEffect(acc, e))
-    }
-
     // Action called by Z.
     // It initializes S's state.
     pure def SimulatorInit : SimulatorState = {
@@ -330,7 +372,7 @@ module iw {
         current_round     : FirstRound
     }
 
-    pure def SimulatorRound() : Effects_t[IwEffect] = {
+    pure def SimulatorRound : Effects_t[IwEffect] = {
         [GClockIwEffect(ClockEffectUpdateItm(ItmEffectUpdateIncoming(ClockIncomingRound)))]
     }
 
@@ -347,16 +389,23 @@ module iw {
         [SimulatorIwEffect(SimulatorEffectUpdatedOked(p_sid))]
     }
 
-    pure def SimulatorTransition(which : SimulatorAction, S : SimulatorState) : Effects_t[IwEffect] = {
+    pure def SimulatorNumberOfCorrupted(s : SimulatorState) : int = {
+        size(s.corrupted_parties)
+    }
+
+    // Corrupt and RoundRequest are instructions from Z, so they are only
+    // enabled while control is with Z (`quiet`). Reading the incoming tape is
+    // a reaction to a message and is always enabled.
+    pure def SimulatorTransition(which : SimulatorAction, s : SimulatorState, quiet : bool) : Effects_t[IwEffect] = {
         match which {
-            | SimulatorActionCorrupt(p_sid) => SimulatorCorrupt(p_sid)
-            | SimulatorActionRoundRequest   => SimulatorRound
-            | SimulatorActionRdIncoming     => match ReadNewIncoming(S.itm) {
+            | SimulatorActionCorrupt(p_sid) => if (quiet) SimulatorCorrupt(p_sid) else []
+            | SimulatorActionRoundRequest   => if (quiet) SimulatorRound else []
+            | SimulatorActionRdIncoming     => match ReadNewIncoming(s.itm) {
                                                     | Some(incoming_message) => {
                                                         (match incoming_message {
                                                             | SimulatorIncomingRound(round) => SimulatorRoundResponse(round)
                                                             | SimulatorIncomingOk(p_sid)    => SimulatorOked(p_sid)
-                                                        }).append(SimulatorIwEffect(SimulatorEffectUpdateItm(ItmEffectIncrementIncomingPointer)))
+                                                        }).append(SimulatorIwEffect(SimulatorEffectUpdateItm(ItmEffectPopIncoming)))
                                                     }
                                                     | None => []
                                                }
@@ -367,8 +416,9 @@ module iw {
 
     // Environment
     // ^^^^^^^^^^^
-
-    type EnvironmentInput = ()
+    //
+    // Z reads everything written to its output tape immediately, so there is
+    // no tape to grow: Z only keeps a bounded summary of what it observed.
 
     type EnvironmentOutput = EnvironmentOutputCorrupted(P_Sid_t)
                            | EnvironmentOutputRegisterOk(P_Sid_t)                         // in the paper ok
@@ -376,67 +426,60 @@ module iw {
                            | EnvironmentOutputRound({ p_sid : P_Sid_t, round : Round_t }) // in the paper r
                            | EnvironmentOutputFailed(P_Sid_t)                             // in the paper ⊥
 
-    type EnvironmentIncoming = ()
-
-    type EnvironmentITM = ITM[EnvironmentInput, EnvironmentOutput, EnvironmentIncoming]
-
     type EnvironmentState = {
-        itm : EnvironmentITM,
+        registered : Set[P_Sid_t],         // parties for which Z saw RegisterOk
+        seen_round : P_Sid_t -> Round_t,   // rounds Z saw since it last sent an Ok
     }
 
-    type EnvironmentEffect = | EnvironmentEffectUpdateItm(ItmEffect[EnvironmentInput, EnvironmentOutput, EnvironmentIncoming])
+    type EnvironmentEffect = EnvironmentEffectObserve(EnvironmentOutput)
+                           | EnvironmentEffectClearRounds
 
-    type EnvironmentAction = EnvironmentActionSetOk(P_Sid_t) 
-                           | EnvironmentActionGetRound(P_Sid_t) 
+    type EnvironmentAction = EnvironmentActionSetOk(P_Sid_t)
+                           | EnvironmentActionGetRound(P_Sid_t)
                            | EnvironmentActionRegister(P_Sid_t)
 
     pure def EnvironmentApplyEffect(state : EnvironmentState, effect : EnvironmentEffect) : EnvironmentState = {
         match (effect) {
-            | EnvironmentEffectUpdateItm(e) => state.with("itm", ItmApplyEffect(state.itm, e))
+            | EnvironmentEffectObserve(out) =>
+                match out {
+                    | EnvironmentOutputRegisterOk(p) => state.with("registered", state.registered.union(Set(p)))
+                    | EnvironmentOutputRound(r)      => state.with("seen_round", state.seen_round.put(r.p_sid, r.round))
+                    | _                              => state
+                }
+            | EnvironmentEffectClearRounds  => state.with("seen_round", Map())
         }
-    }
-
-    pure def EnvironmentApplyEffects(state : EnvironmentState, effects : Effects_t[EnvironmentEffect]) : EnvironmentState = {
-        effects.foldl(state, (acc, e) => EnvironmentApplyEffect(acc, e))
     }
 
     // Action called by the model checker.
     // It initializes Z's state.
-    pure def EnvironmentInit : EnvironmentState = { itm : ItmInit(Z_Sid) }
+    pure def EnvironmentInit : EnvironmentState = { registered : Set(), seen_round : Map() }
 
-    pure def EnvironmentRound(p_sid : P_Sid_t, Parties : PartiesState) : Effects_t[IwEffect] = {
+    pure def EnvironmentRound(p_sid : P_Sid_t) : Effects_t[IwEffect] = {
         [PartiesIwEffect(PartiesEffectUpdateItm({ p_sid: p_sid, effect : ItmEffectUpdateInput(PartiesInputRound) }))]
     }
 
-    pure def EnvironmentOk(p_sid : P_Sid_t, Parties : PartiesState) : Effects_t[IwEffect] = {
-        [PartiesIwEffect(PartiesEffectUpdateItm({ p_sid: p_sid, effect : ItmEffectUpdateInput(PartiesInputOk) }))]
+    // An Ok starts a new "no Ok in between" window for TimeAgreement.
+    pure def EnvironmentOk(p_sid : P_Sid_t) : Effects_t[IwEffect] = {
+        [ PartiesIwEffect(PartiesEffectUpdateItm({ p_sid: p_sid, effect : ItmEffectUpdateInput(PartiesInputOk) }))
+        , EnvironmentIwEffect(EnvironmentEffectClearRounds) ]
     }
 
-    pure def EnvironmentReg(p_sid : P_Sid_t, Parties : PartiesState) : Effects_t[IwEffect] = {
+    pure def EnvironmentReg(p_sid : P_Sid_t) : Effects_t[IwEffect] = {
          [PartiesIwEffect(PartiesEffectUpdateItm({ p_sid: p_sid, effect : ItmEffectUpdateInput(PartiesInputReg) }))]
     }
 
-    pure def EnvironmentAllRegistered(Z : EnvironmentState) : bool = {
-        length(Z.itm.output.select(out => match out {
-            | EnvironmentOutputRegisterOk(_) => true
-            | _             => false
-        })) >= NumberOfParties
+    pure def EnvironmentAllRegistered(z : EnvironmentState) : bool = {
+        size(z.registered) >= NumberOfParties
     }
 
-    pure def EnvironmentNotRegistered(Z : EnvironmentState) : Set[P_Sid_t] = {
-    val registered = Z.itm.output.foldl(Set(), (acc, out) =>
-            match out {
-                | EnvironmentOutputRegisterOk(p) => acc.union(Set(p))
-                | _ => acc
-            })
-        1.to(NumberOfParties).exclude(registered)
-    }
-
-    pure def EnvironmentTransition(which : EnvironmentAction, Parties : PartiesState) : Effects_t[IwEffect] = {
-        match which {
-            | EnvironmentActionSetOk(p_sid)    => EnvironmentOk(p_sid, Parties)
-            | EnvironmentActionGetRound(p_sid) => EnvironmentRound(p_sid, Parties)
-            | EnvironmentActionRegister(p_sid) => EnvironmentReg(p_sid, Parties)
+    // Z gives a new input only when control is back with it (`quiet`).
+    // Registration comes first; Ok and Round only after everyone registered.
+    pure def EnvironmentTransition(which : EnvironmentAction, z : EnvironmentState, quiet : bool) : Effects_t[IwEffect] = {
+        if (not(quiet)) []
+        else match which {
+            | EnvironmentActionRegister(p_sid) => if (z.registered.contains(p_sid)) [] else EnvironmentReg(p_sid)
+            | EnvironmentActionSetOk(p_sid)    => if (EnvironmentAllRegistered(z)) EnvironmentOk(p_sid) else []
+            | EnvironmentActionGetRound(p_sid) => if (EnvironmentAllRegistered(z)) EnvironmentRound(p_sid) else []
         }
     }
 
@@ -459,94 +502,82 @@ module iw {
     type PartyITM = ITM[PartiesInput, PartiesOutput, PartiesIncoming]
 
     type PartyState = {
-        current_round : Round_t,
-        itm           : PartyITM,
+        itm : PartyITM,
     }
 
     type PartiesState = P_Sid_t -> PartyState
 
-    pure def get_p_sid(P : PartyState) : P_Sid_t = {
-        match (P.itm.sid) {
+    pure def get_p_sid(p : PartyState) : P_Sid_t = {
+        match (p.itm.sid) {
             | P_Sid(p_sid) => p_sid
             | _            => InvalidP_Sid
         }
     }
 
-    type PartiesAction = PartiesActionRdInput | PartiesActionRdOutput 
+    type PartiesAction = PartiesActionRdInput | PartiesActionRdOutput
 
     type PartiesEffect = PartiesEffectUpdateItm({p_sid : P_Sid_t, effect : ItmEffect[PartiesInput, PartiesOutput, PartiesIncoming]})
-                       | PartiesEffectUpdateRound(P_Sid_t)
 
     pure def PartiesApplyEffect(state : PartiesState, effect : PartiesEffect) : PartiesState = {
         match (effect) {
-            | PartiesEffectUpdateItm(r)   => state.put(r.p_sid, state.get(r.p_sid).with("itm", ItmApplyEffect(state.get(r.p_sid).itm, r.effect)))
-            | PartiesEffectUpdateRound(p_sid) => state.put(p_sid, state.get(p_sid).with("current_round", state.get(p_sid).current_round + 1))
+            | PartiesEffectUpdateItm(r) => state.put(r.p_sid, state.get(r.p_sid).with("itm", ItmApplyEffect(state.get(r.p_sid).itm, r.effect)))
         }
-    }
-
-    pure def PartiesApplyEffects(state : PartiesState, effects : Effects_t[PartiesEffect]) : PartiesState = {
-        effects.foldl(state, (acc, e) => PartiesApplyEffect(acc, e))
     }
 
     // Action called by Z.
     // It initializes P's state.
-    pure def PartiesInit : PartiesState = 1.to(NumberOfParties).mapBy(i => ({ itm : ItmInit(P_Sid(i)), current_round : 0 }))
+    pure def PartiesInit : PartiesState = 1.to(NumberOfParties).mapBy(i => ({ itm : ItmInit(P_Sid(i)) }))
 
     // Action called by the party when receiving Reg from Z on
     // the input-tape.
-    // Finally it puts an Reg message in the G-Clock's output-tape.
-    pure def PartiesRegister(p_sid : P_Sid_t, GClock : ClockState, Z : EnvironmentState) : Effects_t[IwEffect] = {
-        [GClockIwEffect(ClockEffectUpdateItm(ItmEffectUpdateInput(ClockInputReg(p_sid ))))]
+    // Finally it puts an Reg message in the G-Clock's input-tape.
+    pure def PartiesRegister(p_sid : P_Sid_t) : Effects_t[IwEffect] = {
+        [GClockIwEffect(ClockEffectUpdateItm(ItmEffectUpdateInput(ClockInputReg(p_sid))))]
     }
 
-    pure def PartiesRegisterToZ(p_sid : P_Sid_t, Z : EnvironmentState, response : EnvironmentOutput) : Effects_t[IwEffect] = {
-        [EnvironmentIwEffect(EnvironmentEffectUpdateItm(ItmEffectUpdateOutput(response)))]
-    }
-
-    pure def PartiesRound(p_sid : P_Sid_t, GClock : ClockState) : Effects_t[IwEffect] = {
+    pure def PartiesRound(p_sid : P_Sid_t) : Effects_t[IwEffect] = {
         [GClockIwEffect(ClockEffectUpdateItm(ItmEffectUpdateInput(ClockInputRound(p_sid))))]
     }
 
-    pure def PartiesRoundToZ(p_sid : P_Sid_t, Z : EnvironmentState, round : Round_t) : Effects_t[IwEffect] = {
-        [EnvironmentIwEffect(EnvironmentEffectUpdateItm(ItmEffectUpdateOutput(EnvironmentOutputRound({ p_sid : p_sid, round : round }))))]
+    pure def PartiesRoundToZ(p_sid : P_Sid_t, round : Round_t) : Effects_t[IwEffect] = {
+        [EnvironmentIwEffect(EnvironmentEffectObserve(EnvironmentOutputRound({ p_sid : p_sid, round : round })))]
     }
 
-    pure def PartiesOk(GClock : ClockState, p_sid : P_Sid_t) : Effects_t[IwEffect] = {
+    pure def PartiesOk(p_sid : P_Sid_t) : Effects_t[IwEffect] = {
         [GClockIwEffect(ClockEffectUpdateItm(ItmEffectUpdateInput(ClockInputOk(p_sid))))]
     }
 
-    pure def PartiesMaybeOkToZ(p_sid : P_Sid_t, Z : EnvironmentState, response : PartiesOutput) : Effects_t[IwEffect] = {
-        [EnvironmentIwEffect(EnvironmentEffectUpdateItm(ItmEffectUpdateOutput(match response {
+    pure def PartiesMaybeOkToZ(p_sid : P_Sid_t, response : PartiesOutput) : Effects_t[IwEffect] = {
+        [EnvironmentIwEffect(EnvironmentEffectObserve(match response {
                                                         | PartiesOutputRoundOk    => EnvironmentOutputRoundOk(p_sid)
                                                         | PartiesOutputRegisterOk => EnvironmentOutputRegisterOk(p_sid)
                                                         | PartiesOutputFailed     => EnvironmentOutputFailed(p_sid)
-                                                        | _                       => EnvironmentOutputFailed(p_sid)})))]
+                                                        | _                       => EnvironmentOutputFailed(p_sid)}))]
     }
 
-    pure def PartiesTransition(which : PartiesAction, p_sid : P_Sid_t, Parties : PartiesState, GClock : ClockState, Z : EnvironmentState) : Effects_t[IwEffect] = {
+    pure def PartiesTransition(which : PartiesAction, p_sid : P_Sid_t, parties : PartiesState) : Effects_t[IwEffect] = {
         match which {
             | PartiesActionRdInput    => {
-                match ReadNewInput(Parties.get(p_sid).itm) {
+                match ReadNewInput(parties.get(p_sid).itm) {
                     | Some(input_message) => {
                         (match (input_message) {
-                            | PartiesInputReg   => PartiesRegister(p_sid, GClock, Z)
-                            | PartiesInputRound => PartiesRound(p_sid, GClock)
-                            | PartiesInputOk    => PartiesOk(GClock, p_sid)
-                            | _ => []
-                        }).append(PartiesIwEffect(PartiesEffectUpdateItm({ p_sid : p_sid, effect : ItmEffectIncrementInputPointer })))
+                            | PartiesInputReg   => PartiesRegister(p_sid)
+                            | PartiesInputRound => PartiesRound(p_sid)
+                            | PartiesInputOk    => PartiesOk(p_sid)
+                        }).append(PartiesIwEffect(PartiesEffectUpdateItm({ p_sid : p_sid, effect : ItmEffectPopInput })))
                     }
                     | None => []
                 }
             }
-            | PartiesActionRdOutput => { 
-                match ReadNewOutput(Parties.get(p_sid).itm) {
+            | PartiesActionRdOutput => {
+                match ReadNewOutput(parties.get(p_sid).itm) {
                     | Some(output_message) => {
                         (match output_message {
-                            | PartiesOutputRound(r)   => PartiesRoundToZ(p_sid, Z, r)
-                            | PartiesOutputFailed     => PartiesMaybeOkToZ(p_sid, Z, PartiesOutputFailed)
-                            | PartiesOutputRegisterOk => PartiesMaybeOkToZ(p_sid, Z, PartiesOutputRegisterOk)
-                            | PartiesOutputRoundOk    => PartiesMaybeOkToZ(p_sid, Z, PartiesOutputRoundOk)
-                        }).append(PartiesIwEffect(PartiesEffectUpdateItm({ p_sid : p_sid, effect : ItmEffectIncrementOutputPointer })))
+                            | PartiesOutputRound(r)   => PartiesRoundToZ(p_sid, r)
+                            | PartiesOutputFailed     => PartiesMaybeOkToZ(p_sid, PartiesOutputFailed)
+                            | PartiesOutputRegisterOk => PartiesMaybeOkToZ(p_sid, PartiesOutputRegisterOk)
+                            | PartiesOutputRoundOk    => PartiesMaybeOkToZ(p_sid, PartiesOutputRoundOk)
+                        }).append(PartiesIwEffect(PartiesEffectUpdateItm({ p_sid : p_sid, effect : ItmEffectPopOutput })))
                     }
                     | None => []
                 }
@@ -559,110 +590,79 @@ module iw {
     // Main
     // ^^^^
 
-    // all parties begin already activated by the environment. 
-    // in the ideal world he assume all parties are registered before
-    // they start interacting with the GClock. 
     action IwInit = all {
-        Z'       = EnvironmentInit,
-        S'       = SimulatorInit,
-        GClock'  = ClockInit,
-        Parties' = PartiesInit
+        Z'        = EnvironmentInit,
+        S'        = SimulatorInit,
+        GClock'   = ClockInit,
+        Parties'  = PartiesInit,
+        overflow' = false
     }
 
+    // One machine takes one step. An empty effect list is a stutter step.
+    // Z and S's own initiatives only fire when nothing is pending (UC's
+    // run-to-completion); reactions to pending messages are always enabled.
     action IwStep = {
-       if (EnvironmentAllRegistered(Z)) {
-            // Environment
-            nondet p_sid_z = oneOf(1.to(NumberOfParties))
-            nondet which_z = oneOf(Set( EnvironmentActionRegister(p_sid_z)
-                                      , EnvironmentActionSetOk(p_sid_z)
-                                      , EnvironmentActionGetRound(p_sid_z)))
+        val quiet = Quiescent(S, GClock, Parties)
+        nondet who = oneOf(Set(Z_Sid, S_Sid, GClock_Sid, P_Sid(InvalidP_Sid)))
 
-            // Parties
-            nondet which_p = oneOf(Set( PartiesActionRdOutput
-                                      , PartiesActionRdInput ))
-
-            // Simulator
-            nondet p_sid_s = oneOf(1.to(NumberOfParties))
-            nondet which_s = oneOf(Set( SimulatorActionCorrupt(p_sid_s)
-                                      , SimulatorActionRoundRequest
-                                      , SimulatorActionRdIncoming))
-
-            // GClock
-            nondet which_g = oneOf(Set( ClockActionRdInput
-                                      , ClockActionRdIncoming ))
-
-            val effects = 
-                //Environment
-                (
-                    EnvironmentTransition(which_z, Parties)
-                )
-            
-                // Parties
-                .concat(
-                    1.to(NumberOfParties).fold([], (acc, p_sid) => {
-                        acc.concat(PartiesTransition(which_p, p_sid, Parties, GClock, Z))
-                    })
-                )
-
-                // Simulator
-                .concat(
-                    SimulatorTransition(which_s, S)
-                )
-
-                // GClock
-                .concat(
-                    ClockTransition(which_g, GClock, Z, S, Parties)
-                )
-
-            Update(effects)
-        } else {
-            nondet p_sid = oneOf(EnvironmentNotRegistered(Z))
-
-            val effects = 
+        match who {
+            | Z_Sid => {
                 // Environment
-                EnvironmentTransition(EnvironmentActionRegister(p_sid), Parties)
+                nondet p_sid_z = oneOf(1.to(NumberOfParties))
+                nondet which_z = oneOf(Set( EnvironmentActionRegister(p_sid_z)
+                                          , EnvironmentActionSetOk(p_sid_z)
+                                          , EnvironmentActionGetRound(p_sid_z)))
 
-            Update(effects)
+                Update(EnvironmentTransition(which_z, Z, quiet))
+            }
+
+            | P_Sid(_) => {
+                // Parties
+                nondet which_p = oneOf(Set( PartiesActionRdOutput
+                                          , PartiesActionRdInput ))
+                nondet p_sid_p = oneOf(1.to(NumberOfParties))
+
+                Update(PartiesTransition(which_p, p_sid_p, Parties))
+            }
+
+            | S_Sid => {
+                // Simulator
+                nondet p_sid_s = oneOf(1.to(NumberOfParties))
+                nondet which_s = oneOf(Set( SimulatorActionCorrupt(p_sid_s)
+                                          , SimulatorActionRoundRequest
+                                          , SimulatorActionRdIncoming))
+
+                Update(SimulatorTransition(which_s, S, quiet))
+            }
+
+            | GClock_Sid => {
+                // GClock
+                nondet which_g = oneOf(Set( ClockActionRdInput
+                                          , ClockActionRdIncoming ))
+
+                Update(ClockTransition(which_g, GClock))
+            }
         }
     }
 
-    action Update(effects) = all {
-        Z' = EnvironmentApplyEffects(Z, effects.select(e => 
-                match e {
-                    | EnvironmentIwEffect(_) => true
-                    | _          => false
-                }
-            ).foldl([], (acc, e) => match e {
-                | EnvironmentIwEffect(e) => acc.append(e)
-                | _          => acc
-            })),
-       S' = SimulatorApplyEffects(S, effects.select(e => 
-                match e {
-                    | SimulatorIwEffect(_) => true
-                    | _          => false
-                }
-            ).foldl([], (acc, e) => match e {
-                | SimulatorIwEffect(e) => acc.append(e)
-                | _          => acc
-            })),
-        GClock' = ClockApplyEffects(GClock, effects.select(e => 
-                match e {
-                    | GClockIwEffect(_) => true
-                    | _             => false
-                }
-            ).foldl([], (acc, e) => match e {
-                | GClockIwEffect(e) => acc.append(e)
-                | _          => acc
-            })),
-        Parties' = PartiesApplyEffects(Parties, effects.select(e => 
-                match e {
-                    | PartiesIwEffect(_) => true
-                    | _          => false
-                }
-            ).foldl([], (acc, e) => match e {
-                | PartiesIwEffect(e) => acc.append(e)
-                | _          => acc
-            }))
+    // Applies all effects atomically. If the result would put more than
+    // TapeCap messages on some tape, nothing is applied and `overflow` is set.
+    action Update(effects : Effects_t[IwEffect]) : bool = {
+        val w = effects.foldl({ z : Z, s : S, g : GClock, p : Parties }, (acc, e) => IwApplyEffect(acc, e))
+
+        if (WorldFits(w)) all {
+            Z'        = w.z,
+            S'        = w.s,
+            GClock'   = w.g,
+            Parties'  = w.p,
+            overflow' = overflow
+        } else all {
+            Z'        = Z,
+            S'        = S,
+            GClock'   = GClock,
+            Parties'  = Parties,
+            overflow' = true
+        }
     }
 
     // -----------------------------------------------------------------
@@ -670,30 +670,26 @@ module iw {
     // Properties
     // ^^^^^^^^^^
 
+    // MUST FAIL
+    // ^^^^^^^^^
+
+    val RoundLimit =
+        GClock.current_round < MaxRound
+
+    // MUST PASS
+    // ^^^^^^^^^
+
+    // The tape bound TapeCap never restricts behavior.
+    val NoOverflow = not(overflow)
+
+    // The clock saturates at MaxRound.
+    val RoundBounded = GClock.current_round <= MaxRound
 
     // Time Agreement: If two parties query the time and no OK requests have been sent in the middle then G-clock responds with the same time.
-    val TimeAgreement = 
-        Parties.keys().forall(p1 => 
-            Parties.keys().forall(p2 => 
-                if (p1 != p2) {
-                    match ReadNewOutput(Parties.get(p1).itm) {
-                        | Some(res) => 
-                            match res {
-                                | PartiesOutputRound(r1) => 
-                                    match ReadNewOutput(Parties.get(p2).itm) {
-                                        | Some(res) => 
-                                            match res {
-                                                | PartiesOutputRound(r2) => 
-                                                    r1 == r2
-                                                | _ => true
-                                            }
-                                        | _ => true
-                                    }
-                                | _ => true
-                            }
-                        | _  => true
-                    }
-                } else true
+    val TimeAgreement =
+        Z.seen_round.keys().forall(p1 =>
+            Z.seen_round.keys().forall(p2 =>
+                Z.seen_round.get(p1) == Z.seen_round.get(p2)
             )
         )
 }
@@ -703,7 +699,7 @@ module iw {
 // Real-world Model
 // ^^^^^^^^^^^^^^^^
 
-module rw {    
+module rw {
     import utils.*
 }
 
