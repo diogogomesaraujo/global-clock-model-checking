@@ -7,7 +7,7 @@
 
 ## About 
 
-This project is being developed as part of my MsC thesis in Computer Science at Faculdade de Ciências da Universidade do Porto, entitled _"From Ideal Clocks to Buildable Ones"_. 
+This project is being developed as part of my MsC thesis in Computer Science at Faculdade de Ciências da Universidade do Porto, entitled _"From Ideal Clocks to Buildable Ones"_. The goal is to verify if a real-world distributed protocol, with all the problems that come with it, can satisfy the G-Clock ideal functionality.
 
 ## UC-framework in Quint
 
@@ -21,61 +21,16 @@ In Quint, we model each machine as a state record with input, output, and incomi
 ## Ideal World
 
 The ideal-world model has four main components:
-- Environment (Z): Registers parties and requests rounds or OK (on behalf of them).
-- G-Clock: Tracks registered parties, corruptions, readiness, and the current round.
-- Simulator (S): Requests round advances and party corruptions.
-- Parties (P): Forward requests to the clock and return its responses.
+- **Environment (Z):** Registers parties and requests rounds or OK (on behalf of them).
+- **G-Clock:** Tracks registered parties, corruptions, readiness, and the current round.
+- **Simulator (S):** Requests round advances and party corruptions.
+- **Parties (P):** Forward requests to the clock and return its responses.
 
 ### G-Clock
 
 The G-Clock model is based on the _Crossing with Confidence: Formal Analysis and Model Checking of Blockchain Bridges_ paper. For party corruption, the adaptive-corruption approach from _Universally Composable Synchronous Computation_ was followed, where parties can be corrupted during execution rather than being fixed as corrupted from the start.
 
 The clock maintains a round counter, a set of registered parties, a set of corrupted parties, and a readiness flag (done) for each party.
-
-```
-INITIALIZE:
-    current_round := 0
-    registered_parties := {}
-    corrupted_parties := {}
-    done := {}
-
-ENVIRONMENT Z:
-    After all parties register, send REG, ROUND, or OK requests.
-    Record party responses; clear round observations on OK.
-
-PARTY p:
-    Forward Z's requests to G-Clock.
-    Forward G-Clock's responses to Z.
-
-G-CLOCK:
-    On REG(p):
-        register p if new; initialize done[p] := false
-        return REGISTER_OK
-
-    On ROUND(p):
-        return current_round
-
-    On OK(p):
-        if p is not registered: return FAILED
-        if all registered, uncorrupted parties are ready
-           after counting p's OK:
-            reset their readiness flags
-            advance current_round (up to MaxRound)
-        else:
-            mark p ready
-            send OK(p) leakage to the simulator
-            return ROUND_OK
-
-SIMULATOR S:
-    When tapes are empty, may request a clock round
-    or corrupt a party, up to CorruptedBound.
-    Round requests and corruption requests are forwarded
-    to G-Clock; OK leakage is recorded.
-
-G-CLOCK ON SIMULATOR MESSAGES:
-    ROUND   -> return current_round to simulator
-    CORRUPT(p) -> add p to corrupted_parties
-```
 
 ### Properties
 
