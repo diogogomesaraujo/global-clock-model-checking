@@ -1,5 +1,5 @@
 <div align="center">
-  <h3 align="center">global-clock-model-checking</h3>
+  <h3 align="center">gclock-model-checking</h3>
   <p align="center">
     Model Checking the UC-realization of the Global Clock Ideal Functionality in Quint
   </p>
