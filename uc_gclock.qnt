@@ -572,7 +572,7 @@ module iw {
         Parties'  = PartiesInit,
         overflow' = false,
 
-        // for time liveness property
+        // for time soundness property
         prev_Z'       = None,
         prev_S'       = None,
         prev_GClock'  = None,
@@ -622,7 +622,7 @@ module iw {
             }
         },
 
-        // for time liveness property
+        // for time soundness property
         prev_Z'       = Some(Z),
         prev_S'       = Some(S),
         prev_GClock'  = Some(GClock),
@@ -667,11 +667,12 @@ module iw {
     // For correctness
     val NoOverflow    = 
         not(overflow)
-        
+
     val RoundBounded  = 
         GClock.current_round <= MaxRound
 
-    // Property 1: Time Agreement: If two parties query the time and no OK requests have been sent in the middle then G-clock responds with the same time.
+    // Property 1: Time Agreement: If two parties query the time and no OK requests have been sent 
+    // in the middle then G-clock responds with the same time.
     val TimeAgreement =
         Z.seen_round.keys().forall(p1 =>
             Z.seen_round.keys().forall(p2 =>
@@ -679,8 +680,12 @@ module iw {
             )
         )
 
-    // Property 2: TimeLiveness: If all honest registered parties are ready, then time advances. 
-    val TimeLiveness =
+    // Property 2 (Time Liveness):  If all registered parties are ready, then time advances.
+    // this is non-trivial since we have to track who was registered and corrupted at all times
+    // val TimeLiveness = 
+
+    // Property 3: TimeLiveness: If time advanced then all currently registered honest parties were ready.
+    val TimeSoundness =
         match prev_GClock {
             | Some(pc) =>
                 (pc.current_round < GClock.current_round).implies(
@@ -699,12 +704,6 @@ module iw {
                     })
             | None => true
         }
-
-    val AllProps = and {
-        NoOverflow,
-        RoundBounded,
-        TimeAgreement
-    }
 }
 
 // -----------------------------------------------------------------
