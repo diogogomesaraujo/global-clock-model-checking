@@ -143,6 +143,11 @@ module iw {
     var GClock   : ClockState
     var Parties  : PartiesState
 
+    var prev_Z        : Option_t[EnvironmentState]
+    var prev_S        : Option_t[SimulatorState]
+    var prev_GClock   : Option_t[ClockState]
+    var prev_Parties  : Option_t[PartiesState]
+
     // Set when a step needed more than TapeCap slots on some tape.
     var overflow : bool
 
@@ -565,10 +570,16 @@ module iw {
         S'        = SimulatorInit,
         GClock'   = ClockInit,
         Parties'  = PartiesInit,
-        overflow' = false
+        overflow' = false,
+
+        // for time liveness property
+        prev_Z'       = None,
+        prev_S'       = None,
+        prev_GClock'  = None,
+        prev_Parties' = None
     }
 
-    action IwStep = {
+    action IwStep = all {
         val quiet = Quiescent(S, GClock, Parties)
         nondet who = oneOf(Set(Z_Sid, S_Sid, GClock_Sid, P_Sid(InvalidP_Sid)))
 
@@ -609,7 +620,13 @@ module iw {
 
                 Update(ClockTransition(which_g, GClock))
             }
-        }
+        },
+
+        // for time liveness property
+        prev_Z'       = Some(Z),
+        prev_S'       = Some(S),
+        prev_GClock'  = Some(GClock),
+        prev_Parties' = Some(Parties)
     }
 
     action Update(effects : Effects_t[IwEffect]) : bool = {
@@ -641,12 +658,18 @@ module iw {
     val RoundPastBound =
         GClock.current_round < MaxRound
 
+    val SeenTwoRounds = 
+        size(Z.seen_round.keys()) < 2
+
     // MUST PASS
     // ^^^^^^^^^
 
     // For correctness
-    val NoOverflow    = not(overflow)
-    val RoundBounded  = GClock.current_round <= MaxRound
+    val NoOverflow    = 
+        not(overflow)
+        
+    val RoundBounded  = 
+        GClock.current_round <= MaxRound
 
     // Property 1: Time Agreement: If two parties query the time and no OK requests have been sent in the middle then G-clock responds with the same time.
     val TimeAgreement =
@@ -656,9 +679,26 @@ module iw {
             )
         )
 
-    // Property 2: TimeLiveness: If all honest registered parties are ready, then time advances. this is non-trivial since we have to track who was registered and corrupted at all times
-    // val TimeLiveness = 
-        
+    // Property 2: TimeLiveness: If all honest registered parties are ready, then time advances. 
+    val TimeLiveness =
+        match prev_GClock {
+            | Some(pc) =>
+                (pc.current_round < GClock.current_round).implies(
+                    match ReadNewInput(pc.itm) {
+                        | Some(i) =>
+                            match i {
+                                | ClockInputOk(p) => and {
+                                    pc.registered_parties.contains(p),
+                                    pc.registered_parties.exclude(pc.corrupted_parties)
+                                        .forall(q => q == p or pc.done.get(q) == One),
+                                }
+                                | _ => false
+                            }
+                            
+                        | _ => false
+                    })
+            | None => true
+        }
 
     val AllProps = and {
         NoOverflow,
