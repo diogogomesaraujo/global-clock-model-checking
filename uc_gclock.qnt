@@ -682,7 +682,36 @@ module iw {
 
     // Property 2 (Time Liveness):  If all registered parties are ready, then time advances.
     // this is non-trivial since we have to track who was registered and corrupted at all times
-    // val TimeLiveness = 
+    val TimeLiveness =
+        match prev_GClock {
+            | Some(pc) =>
+                match ReadNewInput(pc.itm) {
+                    | Some(i) =>
+                        match i {
+                            | ClockInputOk(p) =>
+                                and {
+                                    // to make sure it checks cases where the message was consumed after
+                                    length(pc.itm.input) == 1,
+                                    length(GClock.itm.input) == 0,
+
+                                    // because at the max round it saturates
+                                    pc.current_round < MaxRound,
+
+                                    pc.registered_parties.contains(p),
+                                    pc.registered_parties
+                                        .exclude(pc.corrupted_parties)
+                                        .forall(q =>
+                                            q == p or pc.done.get(q) == One
+                                        )
+                                }.implies(
+                                GClock.current_round == pc.current_round + 1
+                                )
+                            | _ => true
+                        }
+                    | _ => true
+                }
+            | None => true
+        }
 
     // Property 3: TimeLiveness: If time advanced then all currently registered honest parties were ready.
     val TimeSoundness =

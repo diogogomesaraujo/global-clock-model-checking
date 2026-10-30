@@ -36,16 +36,58 @@ The clock maintains a round counter, a set of registered parties, a set of corru
 
 To prove the G-Clock's correctness, the following properties where checked (mostly based on the _Crossing with Confidence: Formal_ paper).
 
+
 #### Time Agreement
 
-*If two parties query the time and no OK requests have been sent in the middle then G-clock responds with the same time.*
+_If two parties query the time and no OK requests have been sent in the middle then G-clock responds with the same time._
 
-Bounds used:
-- Parties: 3
-- Corrupted: 1
-- Rounds: 5
+#### Time Liveness
+_If all registered parties are ready, then time advances. This is non-trivial since we have to track who was registered and corrupted at all times._
 
-No violations found.
+#### Time Soundness
+_If time advanced then all currently registered honest parties were ready._
+
+#### Results
+
+<table>
+  <thead>
+    <tr>
+      <th>Property</th>
+      <th>Parties</th>
+      <th>Corrupted</th>
+      <th>Rounds</th>
+      <th>Verification Time</th>
+      <th>Distinct States Generated</th>
+    </tr>
+  </thead>
+  <tbody>
+    <tr>
+      <td>Time Agreement</td>
+      <td>3</td>
+      <td>1</td>
+      <td>5</td>
+      <td>21s</td>
+      <td>492 928</td>
+    </tr>
+    <tr>
+      <td>Time Liveness</td>
+      <td>3</td>
+      <td>1</td>
+      <td>5</td>
+      <td>21s</td>
+      <td>492 928</td>
+    </tr>
+    <tr>
+      <td>Time Soundness</td>
+      <td>3</td>
+      <td>1</td>
+      <td>5</td>
+      <td>21s</td>
+      <td>492 928</td>
+    </tr>
+  </tbody>
+</table>
+
 
 ## Real World
 
