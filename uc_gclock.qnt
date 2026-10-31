@@ -13,7 +13,7 @@ module assumptions {
 
     pure val MaxRound        = 5
 
-    pure val TapeCap         = 1
+    pure val TapeSize         = 1
 }
 
 module utils {
@@ -116,9 +116,9 @@ module uc {
 
     pure def ItmFits(itm : ITM[in, out, incoming]) : bool = {
         and {
-            length(itm.input) <= TapeCap,
-            length(itm.output) <= TapeCap,
-            length(itm.incoming_messages) <= TapeCap,
+            length(itm.input) <= TapeSize,
+            length(itm.output) <= TapeSize,
+            length(itm.incoming_messages) <= TapeSize,
         }
     }
 }
@@ -148,7 +148,7 @@ module iw {
     var prev_GClock   : Option_t[ClockState]
     var prev_Parties  : Option_t[PartiesState]
 
-    // Set when a step needed more than TapeCap slots on some tape.
+    // Set when a step needed more than TapeSize slots on some tape.
     var overflow : bool
 
     // -----------------------------------------------------------------
@@ -185,7 +185,7 @@ module iw {
         }
     }
 
-    pure def Quiescent(s : SimulatorState, g : ClockState, p : PartiesState) : bool = {
+    pure def StayIdle(s : SimulatorState, g : ClockState, p : PartiesState) : bool = {
         and {
             ItmIsEmpty(s.itm),
             ItmIsEmpty(g.itm),
@@ -377,12 +377,12 @@ module iw {
         size(s.corrupted_parties)
     }
 
-    pure def SimulatorTransition(which : SimulatorAction, s : SimulatorState, quiet : bool) : Effects_t[IwEffect] = {
+    pure def SimulatorTransition(which : SimulatorAction, s : SimulatorState, idle : bool) : Effects_t[IwEffect] = {
         match which {
-            | SimulatorActionCorrupt(p_sid) => if (quiet) 
+            | SimulatorActionCorrupt(p_sid) => if (idle) 
                                                if (size(s.corrupted_parties) < CorruptedBound) SimulatorCorrupt(p_sid) 
                                                else [] else []
-            | SimulatorActionRoundRequest   => if (quiet) SimulatorRound else []
+            | SimulatorActionRoundRequest   => if (idle) SimulatorRound else []
             | SimulatorActionRdIncoming     => match ReadNewIncoming(s.itm) {
                                                     | Some(incoming_message) => {
                                                         (match incoming_message {
@@ -449,8 +449,8 @@ module iw {
         size(z.registered) >= NumberOfParties
     }
 
-    pure def EnvironmentTransition(which : EnvironmentAction, z : EnvironmentState, quiet : bool) : Effects_t[IwEffect] = {
-        if (not(quiet)) []
+    pure def EnvironmentTransition(which : EnvironmentAction, z : EnvironmentState, idle : bool) : Effects_t[IwEffect] = {
+        if (not(idle)) []
         else match which {
             | EnvironmentActionRegister(p_sid) => if (z.registered.contains(p_sid)) [] else EnvironmentReg(p_sid)
             | EnvironmentActionSetOk(p_sid)    => if (EnvironmentAllRegistered(z)) EnvironmentOk(p_sid) else []
@@ -580,7 +580,7 @@ module iw {
     }
 
     action IwStep = all {
-        val quiet = Quiescent(S, GClock, Parties)
+        val idle = StayIdle(S, GClock, Parties)
         nondet who = oneOf(Set(Z_Sid, S_Sid, GClock_Sid, P_Sid(InvalidP_Sid)))
 
         match who {
@@ -591,7 +591,7 @@ module iw {
                                           , EnvironmentActionSetOk(p_sid_z)
                                           , EnvironmentActionGetRound(p_sid_z)))
 
-                Update(EnvironmentTransition(which_z, Z, quiet))
+                Update(EnvironmentTransition(which_z, Z, idle))
             }
 
             | P_Sid(_) => {
@@ -610,7 +610,7 @@ module iw {
                                           , SimulatorActionRoundRequest
                                           , SimulatorActionRdIncoming))
 
-                Update(SimulatorTransition(which_s, S, quiet))
+                Update(SimulatorTransition(which_s, S, idle))
             }
 
             | GClock_Sid => {
@@ -658,8 +658,8 @@ module iw {
     val RoundPastBound =
         GClock.current_round < MaxRound
 
-    val SeenTwoRounds = 
-        size(Z.seen_round.keys()) < 2
+    val SeenRounds = 
+        size(Z.seen_round.keys()) < MaxRound
 
     // MUST PASS
     // ^^^^^^^^^
@@ -741,7 +741,10 @@ module iw {
 // ^^^^^^^^^^^^^^^^
 
 module rw {
+    import uc.*
     import utils.*
+
+    
 }
 
 // Main
